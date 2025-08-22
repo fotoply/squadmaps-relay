@@ -1,0 +1,47 @@
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Node
+node_modules/
+coverage/
+.nyc_output/
+dist/
+build/
+out/
+.tmp/
+.temp/
+.cache/
+.parcel-cache/
+.eslintcache
+
+# Logs
+logs/
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env (keep example in repo)
+.env
+.env.*
+!.env.example
+
+# JetBrains / IntelliJ
+.idea/
+*.iml
+
+# Optional: keep selected IntelliJ settings (uncomment to share)
+# !.idea/runConfigurations/
+# !.idea/runConfigurations/*.xml
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
+
+# Editor/Tooling
+.vscode/
+.history/
+
