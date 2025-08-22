@@ -1,9 +1,11 @@
 {
   "name": "squadmaps-relay-server",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
-    "start": "node ./bin/www"
+    "start": "node ./bin/www",
+    "build:userscript": "node scripts/build-userscript.mjs",
+    "build:userscript:emit": "node scripts/build-userscript.mjs --emit"
   },
   "dependencies": {
     "cookie-parser": "~1.4.4",
@@ -13,5 +15,8 @@
     "morgan": "~1.9.1",
     "pug": "2.0.0-beta11",
     "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0"
   }
 }

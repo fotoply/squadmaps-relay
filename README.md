@@ -127,7 +127,29 @@ Each shape serialized to GeoJSON with added properties:
 
 These steps should ONLY be performed by a human, not automatically.
 
-## Installation (Userscript)
+
+## Modular userscript build (scaffolding)
+
+A modular authoring setup has been added so you can split the userscript into small modules while still producing one file for Tampermonkey.
+
+- Author code under: src/userscript/
+    - meta.mjs: exports the @UserScript header banner (preserved).
+    - index.js: entry point calling your bootstrap.
+    - main-bootstrap.js: place imports and initialization here as you migrate.
+- Bundle to dist/tampermonkey-script.js:
+
+```bash
+npm install
+npm run build:userscript
+```
+
+- To also overwrite the root tampermonkey-script.js (served by your server):
+
+```bash
+npm run build:userscript:emit
+```
+
+### Installation (Userscript)
 
 1. Install Tampermonkey (or similar manager).
 2. Add the `tampermonkey-script.js` (served by your domain or local deployment).
@@ -194,6 +216,13 @@ In order of priority:
 - Role / permission layers (view vs edit).
 - Bandwidth optimization (delta updates for edits).
 - Firefox supports (currently not sure what breaks, no errors in console, but the script does not work).
+
+## Versioning
+
+- The userscript @version is injected from package.json (semver).
+- To bump the userscript version:
+  - Edit "version" in package.json or run `npm version <new-version>`.
+  - Rebuild: `npm run build:userscript` (and `:emit` if you want to overwrite the root userscript).
 
 ---
 MIT License.
