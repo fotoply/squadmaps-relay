@@ -55,6 +55,17 @@ partially polyfills) Leaflet + Leaflet.Draw on the live site.
     scale‑corrected units.
 13. Fixed polygon/rectangle area accuracy: compute area in the map’s CRS using `crs.project` (planar units²), then apply
     the in‑game scale (k²). This removes the ~25% inflation and aligns area with distance scaling.
+14. Faster point clicking: reduced replay/backoff delays, earlier CircleMarker hook install, and immediate emit on click
+    to make local pings and remote propagation feel snappier.
+15. Toolbars reattach after map changes: draw toolbar is auto‑recreated if missing; modules (color picker, markers,
+    view‑sync) re‑attach their buttons on a custom `squadmaps:drawToolbarReady` event so everything reappears instantly
+    after choosing a new map.
+16. Draw control container no longer absorbs clicks: `.leaflet-draw.leaflet-control` now uses `pointer-events: none`
+    while its clickable children re‑enable events; this unblocks the site settings button.
+17. Draw toolbar border removed: `.leaflet-draw-toolbar.leaflet-bar` now renders without border/box‑shadow to match the
+    design.
+18. Color picker icon contrast: the eyedropper icon on the color button switches between black/white automatically based
+    on the selected color for readability.
 
 ## Architecture
 
@@ -63,6 +74,32 @@ partially polyfills) Leaflet + Leaflet.Draw on the live site.
 - **Client test page (client.html)**: Simple Socket.IO connectivity check (optional).
 - **Userscript (tampermonkey-script.js)**: Injected on squadmaps.com; loads Leaflet.Draw (if absent), captures the map
   instance, manages collaborative layers, presence UI, and real‑time socket events.
+
+## Modules (userscript) and wiring
+
+This userscript is now modular. Key modules and how they’re wired in `src/userscript/main-bootstrap.js`:
+
+- `modules/sockets.js`: `initSocket(deps)` connects to the relay and exposes `emit` helpers. For diagnostics, the raw
+  Socket.IO instance is available at `window.__squadSocket`.
+- `modules/draw.js`: `initDraw({ emit })` sets up Leaflet.Draw and emits `drawCreate/drawEdit/drawDelete`. Incoming
+  socket events are applied via `applyRemoteDrawCreate/Edit/Delete`.
+- `modules/view-sync.js`: `initViewSync({ emit })` adds a Sync View toolbar button (broadcast current view) and exposes
+  `applyRemoteViewIfPossible(view)`. The Apply View button has been removed; use the presence list to follow a user's view.
+- `modules/presence.js`: `initPresence({ applyRemoteView })` renders the presence panel, live cursors, and follow
+  behavior. Use `presence.setEmit({ presenceUpdate, usernameSet })` to hook socket emitters.
+- `modules/markers.js`: Font Awesome marker picker that patches the Marker draw tool’s icon.
+- `rightclick.js`: Right‑click handling that suppresses the context menu in the map and finishes/cancels active draws.
+
+Bootstrapping changes:
+
+- We patch `L.Map` construction to capture the first map instance onto `window.squadMap` for downstream modules.
+- We buffer incoming drawings from `state init` if they arrive before the map is ready, then flush them once the map
+  exists, so late‑init clients still hydrate properly.
+
+Optional wiring you can add later:
+
+- Map path synchronization (`map changed`) and marker click broadcasting (`point clicked`) can be forwarded through
+  `initSocket` callbacks in the same way as drawings and presence.
 
 ### Key Internal Structures
 
@@ -127,10 +164,10 @@ Each shape serialized to GeoJSON with added properties:
 
 These steps should ONLY be performed by a human, not automatically.
 
-
 ## Modular userscript build (scaffolding)
 
-A modular authoring setup has been added so you can split the userscript into small modules while still producing one file for Tampermonkey.
+A modular authoring setup has been added so you can split the userscript into small modules while still producing one
+file for Tampermonkey.
 
 - Author code under: src/userscript/
     - meta.mjs: exports the @UserScript header banner (preserved).
@@ -187,11 +224,14 @@ In order of priority:
   drawing tool, as well as a small list in the corner with the names of all users currently connected to the map. The
   list should have a radio button next to each user to select them, and if a user is selected then your view should be
   synchronized to theis.
-- [ ] Make polygon and poly-lines sync as they are being drawn, not only when finished. (multiple attempts have been made, all failed, some leftover code is still in the script)
+- [ ] Make polygon and poly-lines sync as they are being drawn, not only when finished. (multiple attempts have been
+  made, all failed, some leftover code is still in the script)
 - [x] Update the text when drawing on the map to use in-game length units (e.g. meters, kilometers, etc.) instead of
   Leaflet's default units, and make them actually reflect the in-game units, e.g. when drawing a polygon it should
   show the perimeter and area in in-game units, and when drawing a polyline it should show the length in in-game units.
   Maybe need to look at how the grid system works in SquadMaps to get the correct units.
+- [x] The div with the class="leaflet-draw leaflet-control" was blocking the settings in the top-left; now the outer
+  container ignores pointer events while toolbar buttons remain clickable.
 - [ ] Undo/redo with ctrl+z / ctrl+y support.
 - [ ] Better state synchronization when joining mid-session, currently it relies on clicking ALL the points to resync
   the
@@ -221,8 +261,8 @@ In order of priority:
 
 - The userscript @version is injected from package.json (semver).
 - To bump the userscript version:
-  - Edit "version" in package.json or run `npm version <new-version>`.
-  - Rebuild: `npm run build:userscript` (and `:emit` if you want to overwrite the root userscript).
+    - Edit "version" in package.json or run `npm version <new-version>`.
+    - Rebuild: `npm run build:userscript` (and `:emit` if you want to overwrite the root userscript).
 
 ---
 MIT License.

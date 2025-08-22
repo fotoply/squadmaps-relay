@@ -18,7 +18,7 @@ let clickHistory = []; // array of latlng objects
 const MAX_HISTORY = 500; // cap to prevent unbounded growth
 let drawings = {}; // id -> shape { id, geojson }
 let currentView = null; // { center: {lat, lng}, zoom }
-let users = {}; // socketId -> { id, name, tool, cursor }
+let users = {}; // socketId -> { id, name, tool, cursor, view, color }
 
 app.get('/', (req, res) => {
     res.sendFile(join(__dirname, 'client.html'));
@@ -32,7 +32,7 @@ app.get('/tampermonkey-script.js', (req, res) => {
 io.on('connection', (socket) => {
     console.log('a user connected');
     // Register user
-    users[socket.id] = { id: socket.id, name: null, tool: null, cursor: null };
+    users[socket.id] = { id: socket.id, name: null, tool: null, cursor: null, view: null, color: null };
     // Send current state to the newly connected client (always send presence snapshot)
     socket.emit('state init', {
         currentMap,
@@ -126,7 +126,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Presence: cursor/tool updates
+    // Presence: cursor/tool/color/view updates
     socket.on('presence update', (payload) => {
         try {
             if (!payload || typeof payload !== 'object') return;
@@ -138,11 +138,18 @@ io.on('connection', (socket) => {
             if (payload.view && payload.view.center && Number.isFinite(payload.view.center.lat) && Number.isFinite(payload.view.center.lng) && Number.isFinite(payload.view.zoom)) {
                 u.view = { center: { lat: payload.view.center.lat, lng: payload.view.center.lng }, zoom: payload.view.zoom };
             }
+            if (payload.color && typeof payload.color === 'string') {
+                const m = String(payload.color).trim();
+                if (/^#?[0-9a-fA-F]{6}$/.test(m)) {
+                    u.color = (m[0] === '#' ? m : ('#' + m)).toLowerCase();
+                }
+            }
             // Broadcast minimal delta to others (include only fields that changed)
             const delta = { id: socket.id };
             if ('tool' in payload) delta.tool = u.tool;
             if (payload.cursor) delta.cursor = u.cursor;
             if (payload.view) delta.view = u.view;
+            if (payload.color) delta.color = u.color;
             socket.broadcast.emit('presence update', delta);
         } catch (e) {
             console.warn('presence update error', e);

@@ -14,3 +14,5 @@ After completing a task do not proceed to the next task until the user has verif
 and functional.
 
 You may use IntelliJ tools if they are deemed suitable, but they should be used sparingly as they require user confirmation.
+
+Do not attempt to run the NPM tools yourself, simply tell the user that they can do that now.

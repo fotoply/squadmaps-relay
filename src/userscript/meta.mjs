@@ -15,7 +15,7 @@ export function buildMeta(version = '0.0.0') {
 // @downloadURL  https://minecraft-alt.fotoply.dev:3000/tampermonkey-script.js
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=squadmaps.com
 // @grant        none
-// @run-at       document-body
+// @run-at       document-start
 // ==/UserScript==
 `;
 }
