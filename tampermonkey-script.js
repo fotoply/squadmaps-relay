@@ -2568,8 +2568,31 @@
         try {
             const {center, zoom} = view;
             if (!center || typeof zoom !== 'number') return false;
+            const cur = squadMap.getCenter();
+            const curZoom = squadMap.getZoom();
+            // If already essentially there, skip
+            const closePos = cur && Math.abs(cur.lat - center.lat) + Math.abs(cur.lng - center.lng) < 1e-8;
+            const closeZoom = Math.abs((curZoom ?? 0) - zoom) < 1e-6;
+            if (closePos && closeZoom) return true;
+            // Prefer smooth animation; fall back to setView if needed
+            const target = L.latLng(center.lat, center.lng);
+            const opts = { animate: true, duration: 0.8, easeLinearity: 0.25, noMoveStart: false };
             isApplyingRemoteView = true;
-            squadMap.setView([center.lat, center.lng], zoom, {animate: false});
+            try {
+                // If zoom doesn’t change much, pan is sufficient; else flyTo handles both
+                if (Math.abs((curZoom ?? zoom) - zoom) < 0.01) {
+                    squadMap.panTo(target, opts);
+                } else if (typeof squadMap.flyTo === 'function') {
+                    squadMap.flyTo(target, zoom, opts);
+                } else {
+                    squadMap.setView(target, zoom, { animate: true });
+                }
+            } catch (_) {
+                try { squadMap.setView(target, zoom, { animate: true }); } catch(__) {}
+            }
+            // Best-effort reset after animation completes
+            const reset = () => { isApplyingRemoteView = false; try { squadMap.off('moveend', reset); } catch(_) {} };
+            try { squadMap.on('moveend', reset); } catch(_) { isApplyingRemoteView = false; }
             return true;
         } catch (_) {
             isApplyingRemoteView = false; // fail-safe
@@ -3111,7 +3134,7 @@
                 if (shp && typeof shp.getLatLngs === 'function') {
                     const arr = shp.getLatLngs();
                     const ring = Array.isArray(arr) && arr.length ? (Array.isArray(arr[0]) ? arr[0] : arr) : [];
-                    if (!ring.length) return null;
+                    if (!ring.length) return 0;
                     return ring.map(ll => ({ lat: ll.lat, lng: ll.lng }));
                 }
                 return null;
