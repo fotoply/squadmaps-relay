@@ -72,7 +72,7 @@ partially polyfills) Leaflet + Leaflet.Draw on the live site.
 - **Server (app.js)**: Express + Socket.IO; acts as stateful relay: tracks current map, last clicks, drawing state, and
   simple presence (name/tool/cursor/view). Emits deltas to all other clients.
 - **Client test page (client.html)**: Simple Socket.IO connectivity check (optional).
-- **Userscript (tampermonkey-script.js)**: Injected on squadmaps.com; loads Leaflet.Draw (if absent), captures the map
+- **Userscript (dist/tampermonkey-script.js)**: Injected on squadmaps.com; loads Leaflet.Draw (if absent), captures the map
   instance, manages collaborative layers, presence UI, and real‑time socket events.
 
 ## Modules (userscript) and wiring

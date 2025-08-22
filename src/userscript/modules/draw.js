@@ -770,6 +770,8 @@ function setupToolbar(map, group, baseColor) {
     }
     // Also ensure toolbar CSS fixes are present
     try { ensureToolbarFixCss(); } catch (_) {}
+    // Ensure circles remain interactive when Canvas renderer is used
+    try { ensureCircleInteractiveCss(); } catch (_) {}
     // Notify other modules that toolbar is ready (for extras, etc.)
     try {
         window.dispatchEvent(new CustomEvent('squadmaps:drawToolbarReady', {detail: {map, control: ctrl}}));
@@ -1025,6 +1027,11 @@ export function initDraw(deps = {}) {
                 const lastSig = map.__squadmapsLastCreateSig || '';
                 const id = generateId();
                 layer._drawSyncId = id;
+                // Maintain id->layer map locally so remote deletes can remove our own shapes too
+                try {
+                    const idMap = map.__squadmapsLayerIdMap || (map.__squadmapsLayerIdMap = {});
+                    idMap[id] = layer;
+                } catch (_) {}
                 if (sig !== lastSig) {
                     emit.drawCreate && emit.drawCreate({id, geojson: feature});
                     map.__squadmapsLastCreateSig = sig;
@@ -1073,7 +1080,14 @@ export function initDraw(deps = {}) {
                 layers && layers.eachLayer && layers.eachLayer((layer) => {
                     if (layer._drawSyncId) ids.push(layer._drawSyncId);
                 });
-                if (ids.length) emit.drawDelete && emit.drawDelete(ids);
+                if (ids.length) {
+                    // Remove from local id map as well
+                    try {
+                        const idMap = map.__squadmapsLayerIdMap || (map.__squadmapsLayerIdMap = {});
+                        ids.forEach((id) => { try { delete idMap[id]; } catch (_) {} });
+                    } catch (_) {}
+                    emit.drawDelete && emit.drawDelete(ids);
+                }
             } catch (err) {
                 console.warn('[draw] draw:deleted handler failed', err);
             }
@@ -1117,6 +1131,12 @@ export function initDraw(deps = {}) {
                         } catch (_) {
                         }
                         const ret = origClear();
+                        try {
+                            // Remove from local id map too so we stay consistent
+                            const mapRef = (typeof window !== 'undefined' && window.squadMap) || null;
+                            const idMap = mapRef && (mapRef.__squadmapsLayerIdMap || (mapRef.__squadmapsLayerIdMap = {}));
+                            if (idMap && ids.length) ids.forEach((id) => { try { delete idMap[id]; } catch (_) {} });
+                        } catch (_) {}
                         try {
                             if (ids.length && emit && emit.drawDelete) emit.drawDelete(ids);
                         } catch (_) {

@@ -1,7 +1,7 @@
 // filepath: src/userscript/index.js
 /*
 Entry point for the modular Tampermonkey userscript build.
-Gradually migrate code from tampermonkey-script.js into modules imported here.
+Gradually migrate code from tampermonkey-script-legacy.js into modules imported here.
 */
 import { bootstrap } from './main-bootstrap.js';
 
