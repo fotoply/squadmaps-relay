@@ -20,12 +20,93 @@ let __toolbarEnsureDebounce = null;
 let __hookedInitOnce = false;
 let __loggedMapScanOnce = false;
 
+// Undo/redo stacks and vars
+let __undoStack = [];
+let __redoStack = [];
+let __undoListenerAdded = false;
+
 function __isActiveMapPath() {
-  try {
-    const p = (window.location && (window.location.pathname || '')) || '';
-    // Active map views use '/map' path; selector uses '/' with ?map=...
-    return typeof p === 'string' && p.startsWith('/map');
-  } catch (_) { return false; }
+    try {
+        const p = (window.location && (window.location.pathname || '')) || '';
+        // Active map views use '/map' path; selector uses '/' with ?map=...
+        return typeof p === 'string' && p.startsWith('/map');
+    } catch (_) {
+        return false;
+    }
+}
+
+// Setup undo/redo key listener functions
+function __handleKeydown(e) {
+    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); __undo(); }
+    else if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); __redo(); }
+}
+
+function __addUndoListener() {
+    if (!__undoListenerAdded && typeof window !== 'undefined') {
+        window.addEventListener('keydown', __handleKeydown);
+        __undoListenerAdded = true;
+    }
+}
+
+function __undo() {
+    try {
+        const op = __undoStack.pop();
+        if (!op) return;
+        const map = window.squadMap;
+        const group = map && map.__squadmapsDrawnItems;
+        if (!group) return;
+        if (op.action === 'create') {
+            const layer = map.__squadmapsLayerIdMap && map.__squadmapsLayerIdMap[op.id];
+            if (layer) { group.removeLayer(layer); delete map.__squadmapsLayerIdMap[op.id]; }
+            if (__emitRef && __emitRef.drawDelete) __emitRef.drawDelete([op.id]);
+            __redoStack.push(op);
+        } else if (op.action === 'delete') {
+            const recreated = [];
+            op.layers.forEach(item => {
+                const layer = geojsonToLayer(item.feature);
+                if (layer) {
+                    layer._drawSyncId = item.id;
+                    group.addLayer(layer);
+                    map.__squadmapsLayerIdMap = map.__squadmapsLayerIdMap || {};
+                    map.__squadmapsLayerIdMap[item.id] = layer;
+                    recreated.push(item);
+                }
+            });
+            recreated.forEach(item => {
+                if (__emitRef && __emitRef.drawCreate) __emitRef.drawCreate({id: item.id, geojson: item.feature});
+            });
+            __redoStack.push(op);
+        }
+    } catch (_) {}
+}
+
+function __redo() {
+    try {
+        const op = __redoStack.pop();
+        if (!op) return;
+        const map = window.squadMap;
+        const group = map && map.__squadmapsDrawnItems;
+        if (!group) return;
+        if (op.action === 'create') {
+            const layer = geojsonToLayer(op.feature);
+            if (layer) {
+                layer._drawSyncId = op.id;
+                group.addLayer(layer);
+                map.__squadmapsLayerIdMap = map.__squadmapsLayerIdMap || {};
+                map.__squadmapsLayerIdMap[op.id] = layer;
+                if (__emitRef && __emitRef.drawCreate) __emitRef.drawCreate({id: op.id, geojson: op.feature});
+            }
+            __undoStack.push(op);
+        } else if (op.action === 'delete') {
+            const ids = [];
+            op.layers.forEach(item => {
+                const layer = map.__squadmapsLayerIdMap && map.__squadmapsLayerIdMap[item.id];
+                if (layer) { group.removeLayer(layer); delete map.__squadmapsLayerIdMap[item.id]; ids.push(item.id); }
+            });
+            if (ids.length && __emitRef && __emitRef.drawDelete) __emitRef.drawDelete(ids);
+            __undoStack.push(op);
+        }
+    } catch (_) {}
 }
 
 function ensureLeafletDrawAssets() {
@@ -1035,6 +1116,9 @@ export function initDraw(deps = {}) {
                 if (sig !== lastSig) {
                     emit.drawCreate && emit.drawCreate({id, geojson: feature});
                     map.__squadmapsLastCreateSig = sig;
+                    // push undo op
+                    __undoStack.push({action: 'create', id, feature});
+                    __redoStack = [];
                 }
             } catch (err) {
                 console.warn('[draw] draw:created handler failed', err);
@@ -1081,6 +1165,15 @@ export function initDraw(deps = {}) {
                     if (layer._drawSyncId) ids.push(layer._drawSyncId);
                 });
                 if (ids.length) {
+                    // capture deleted layers for undo
+                    const removed = [];
+                    layers.eachLayer(layer => {
+                        if (layer._drawSyncId) {
+                            removed.push({id: layer._drawSyncId, feature: layerToSerializable(layer)});
+                        }
+                    });
+                    __undoStack.push({action: 'delete', layers: removed});
+                    __redoStack = [];
                     // Remove from local id map as well
                     try {
                         const idMap = map.__squadmapsLayerIdMap || (map.__squadmapsLayerIdMap = {});
@@ -1190,7 +1283,10 @@ export function initDraw(deps = {}) {
         } catch (_) {
         }
 
-        return true;
+        // Initialize undo/redo listener
+        __addUndoListener();
+
+    return true;
     };
 
     if (start()) return;
