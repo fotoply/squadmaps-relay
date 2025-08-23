@@ -137,9 +137,16 @@ npm run build:userscript:emit
 - [x] Fix toolbar blocking clicks and improve readability; larger edit vertices.
 - [x] Font Awesome marker icons with radial picker; remember choice.
 - [ ] Undo/redo (Ctrl+Z / Ctrl+Y).
-- [ ] Better late‑join performance for very large sessions (delta edits, paging).
+- [ ] Edit sync in progress (move vertices, move entire shape), not just on edit end.
 - [ ] Mortar workflow: shared targets with per‑client movable local marker.
+- [ ] Squad specific features: spawn points, rally points, FOBs, etc. with a corresponding radius that is pre-scaled.
+  Should be one-element, so if you move or delete the flag the radius goes with it. They should also have a fixed color
+  based on type (e.g. spawn = green, rally = blue, FOB = yellow/dashed). <- New module
+- [ ] Better late‑join performance for very large sessions (delta edits, paging).
 - [ ] Additional robustness for initial Leaflet hook on very slow loads.
+- [ ] Server selection which uses a handshake to verify that the relay is reachable before switching.
+- [ ] Multi-room support, only emit events to others in the same room, including map change and state init. By default
+  everyone is in the same room.
 
 ## Versioning
 
