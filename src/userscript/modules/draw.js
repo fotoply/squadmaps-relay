@@ -283,6 +283,18 @@ function __handleKeydown(e) {
         e.preventDefault();
         __redo();
     }
+    // While toolbar edit mode is active, treat E/Enter as Save
+    else if (__toolbarEditModeActive && (e.key === 'e' || e.key === 'E' || e.key === 'Enter')) {
+        e.preventDefault();
+        const ok = __clickToolbarSave();
+        if (ok) {
+            try { __toolbarEditModeActive = false; } catch (_) {}
+            return;
+        }
+        // Fallback: flush and stop any active manual edit and restore pointers
+        __stopEditingActiveLayer();
+        try { __toolbarEditModeActive = false; } catch (_) {}
+    }
     // Delete layer at mouse event
     else if ((e.key === 'Delete' || e.key === 'Backspace' || e.key === "d" || e.key === "D")) {
         e.preventDefault();
@@ -292,9 +304,61 @@ function __handleKeydown(e) {
     // Edit layer at mouse event
     else if ((e.key === 'e' || e.key === 'E' || e.key === 'Enter')) {
         e.preventDefault();
+        // If no hovered layer but a layer is currently being edited, treat as save/stop
+        if (!__toolbarEditModeActive && !__hoveredLayer && __activeEditedLayer) {
+            __stopEditingActiveLayer();
+            return;
+        }
         console.log('[draw] __handleKeydown: edit key pressed', e.key);
         __editLayerAtEvent(e);
     }
+}
+
+function __clickToolbarSave() {
+    try {
+        const map = (typeof window !== 'undefined' && window.squadMap) || null;
+        if (!map) return false;
+        let success = false;
+        // 1) Try clicking the visible Save button
+        try {
+            const root = map._container || document;
+            let btn = (root && root.querySelector && (root.querySelector('.leaflet-draw-actions .leaflet-draw-edit-save')
+                || root.querySelector('.leaflet-draw-actions a.leaflet-draw-edit-save')
+                || root.querySelector('[class*="leaflet-draw-edit-save"]')));
+            if (!btn && typeof document !== 'undefined') {
+                btn = document.querySelector('.leaflet-draw-actions .leaflet-draw-edit-save')
+                    || document.querySelector('[class*="leaflet-draw-edit-save"]');
+            }
+            if (btn) {
+                try {
+                    btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+                    success = true;
+                } catch (_) {
+                    try { btn.click(); success = true; } catch (__) {}
+                }
+            }
+        } catch (_) {}
+        if (success) return true;
+        // 2) Fallback to internal toolbar API
+        try {
+            const ctrl = map.__squadmapsDrawControl || null;
+            const editTb = ctrl && ctrl._toolbars && (ctrl._toolbars.edit || null);
+            if (editTb) {
+                // Try toolbar-level _save(), then disable active handler
+                let didSave = false;
+                try { if (typeof editTb._save === 'function') { editTb._save(); didSave = true; } } catch (_) {}
+                // Disable edit toolbar mode to exit
+                try {
+                    if (typeof editTb.disable === 'function') editTb.disable();
+                    else if (editTb._activeMode && editTb._activeMode.handler && typeof editTb._activeMode.handler.disable === 'function') {
+                        editTb._activeMode.handler.disable();
+                    }
+                } catch (_) {}
+                if (didSave) return true;
+            }
+        } catch (_) {}
+    } catch (_) {}
+    return false;
 }
 
 function __addUndoListener() {
