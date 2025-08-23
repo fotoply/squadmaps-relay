@@ -10,6 +10,7 @@ const AVAILABLE_MARKER_ICONS = [
 const KEY = 'squadmapsMarkerIcon';
 let __radialEl = null;
 let __radialClosedCbs = [];
+let __radialMarkerRef = null; // track marker tied to the open radial
 
 function ensureFA() {
   if (document.getElementById('squadmaps-fa')) return;
@@ -60,6 +61,7 @@ function closeRadial() {
   try { if (__radialEl && __radialEl.parentElement) __radialEl.parentElement.removeChild(__radialEl); } catch (_) {}
   __radialEl = null;
   try { window.__squadMarkerRadialOpen = false; } catch (_) {}
+  // removed per-module Escape key listener; handled by keyboard module
   try { document.removeEventListener('click', onDocClick, true); } catch (_) {}
   try { const map = window.squadMap; map && map.off && map.off('movestart', closeRadial); map && map.off && map.off('zoomstart', closeRadial); } catch (_) {}
   try { const cbs = __radialClosedCbs.slice(); __radialClosedCbs.length = 0; cbs.forEach(fn => { try { fn(); } catch (_) {} }); } catch (_) {}
@@ -70,6 +72,7 @@ function onDocClick(e) { if (!__radialEl) return; if (__radialEl.contains(e.targ
 function openRadialForMarker(marker) {
   try { closeRadial(); } catch (_) {}
   const map = window.squadMap; if (!map || !marker) return;
+  __radialMarkerRef = marker; // remember marker for potential cancel
   try { window.__squadMarkerRadialOpen = true; } catch (_) {}
   ensureFA(); ensureCss();
   const centerPt = map.latLngToContainerPoint(marker.getLatLng());
@@ -98,6 +101,7 @@ function openRadialForMarker(marker) {
       // Notify draw module to emit an edit for this marker
       try { const mapRef = window.squadMap; mapRef && mapRef.fire && mapRef.fire('squad:markerIconChanged', { layer: marker }); } catch (_) {}
       closeRadial();
+      __radialMarkerRef = null; // confirmed selection; no cancel pending anymore
     });
     wrap.appendChild(a);
   });
@@ -105,6 +109,13 @@ function openRadialForMarker(marker) {
   (map._container || document.body).appendChild(wrap);
   __radialEl = wrap;
   document.addEventListener('click', onDocClick, true);
+  // Right-click on the radial cancels placement
+  try {
+    wrap.addEventListener('contextmenu', (e) => {
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+      try { if (typeof window.__squadCancelMarkerRadial === 'function') window.__squadCancelMarkerRadial(); } catch (_) {}
+    }, true);
+  } catch (_) {}
   try { map.on && map.on('movestart', closeRadial); map.on && map.on('zoomstart', closeRadial); } catch (_) {}
 }
 
@@ -114,6 +125,18 @@ try {
   window.__squadOnMarkerRadialClosedOnce = (cb) => { if (!cb) return; if (!window.__squadMarkerRadialOpen) { try { cb(); } catch(_) {} return; } __radialClosedCbs.push(cb); };
   // Also expose a closer so the keyboard module can close on Escape
   window.__squadCloseMarkerRadial = closeRadial;
+  // New: expose a cancel function that deletes the placeholder marker tied to the open radial
+  window.__squadCancelMarkerRadial = () => {
+    try {
+      const map = (typeof window !== 'undefined' && window.squadMap) || null;
+      const m = __radialMarkerRef;
+      if (map && m) {
+        try { map.fire && map.fire('squad:cancelRadialMarker', { layer: m }); } catch (_) {}
+      }
+    } catch (_) {}
+    try { __radialMarkerRef = null; } catch (_) {}
+    try { closeRadial(); } catch (_) {}
+  };
 } catch (_) {}
 
 export function initMarkers() {

@@ -63,7 +63,16 @@ function onKeyDown(e) {
 
     // Escape: close radial marker menu if open (and optionally stop manual edit)
     if (key === 'Escape') {
-      try { if (typeof window.__squadCloseMarkerRadial === 'function') window.__squadCloseMarkerRadial(); } catch (_) {}
+      try {
+        if (typeof window !== 'undefined' && window.__squadMarkerRadialOpen) {
+          if (typeof window.__squadCancelMarkerRadial === 'function') {
+            window.__squadCancelMarkerRadial();
+          } else if (typeof window.__squadCloseMarkerRadial === 'function') {
+            window.__squadCloseMarkerRadial();
+          }
+          return;
+        }
+      } catch (_) {}
       return;
     }
 
@@ -105,4 +114,3 @@ export function initKeyboard() {
     __installed = true;
   } catch (_) {}
 }
-

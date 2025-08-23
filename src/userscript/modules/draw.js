@@ -1538,6 +1538,19 @@ export function initDraw(deps = {}) {
                     if (layer instanceof L.Marker && typeof window.__squadOpenMarkerRadial === 'function') window.__squadOpenMarkerRadial(layer);
                 } catch (_) {
                 }
+                // Ensure newly created markers carry icon metadata and user color so remotes render correctly
+                try {
+                    if (layer instanceof L.Marker) {
+                        const ctrl = map && map.__squadmapsDrawControl;
+                        const iconName = (ctrl && ctrl.options && ctrl.options.draw && ctrl.options.draw.marker && ctrl.options.draw.marker.iconName)
+                            || (window && window.__squadMarkerIconName)
+                            || 'crosshairs';
+                        const col = ((typeof window !== 'undefined' && window.userColor) || '#ff6600');
+                        layer.__faIconName = iconName;
+                        layer.__faColor = col;
+                        try { layer.setIcon(faDivIcon(iconName, col)); } catch (_) {}
+                    }
+                } catch (_) {}
                 const feature = layerToSerializable(layer);
                 // Duplicate-create suppression (per-map signature)
                 const sig = JSON.stringify(feature || {});
@@ -1623,6 +1636,41 @@ export function initDraw(deps = {}) {
                 }
             } catch (err) {
                 console.warn('[draw] draw:deleted handler failed', err);
+            }
+        });
+
+        // Handle canceling a just-placed marker when radial is open (Escape)
+        map.on('squad:cancelRadialMarker', (ev) => {
+            try {
+                const layer = ev && ev.layer;
+                if (!layer || !layer._drawSyncId) return;
+                const id = layer._drawSyncId;
+                const grp = map.__squadmapsDrawnItems;
+                if (!grp) return;
+                // Remove from group and id map
+                try { grp.removeLayer(layer); } catch (_) {}
+                try {
+                    const idMap = map.__squadmapsLayerIdMap || (map.__squadmapsLayerIdMap = {});
+                    delete idMap[id];
+                } catch (_) {}
+                // Coalesce undo stack if the last op was this marker's create
+                try {
+                    const top = __undoStack[__undoStack.length - 1];
+                    if (top && top.action === 'create' && top.id === id) {
+                        __undoStack.pop();
+                    } else {
+                        // Otherwise record an explicit delete for undo symmetry
+                        const feature = layerToSerializable(layer);
+                        if (feature) __undoStack.push({ action: 'delete', layers: [{ id, feature }] });
+                    }
+                    __redoStack = [];
+                } catch (_) {}
+                // Emit delete so remotes remove the placeholder too
+                try { emit.drawDelete && emit.drawDelete([id]); } catch (_) {}
+                // Re-arm tool in continuous mode
+                try { if (typeof window !== 'undefined' && window.__squadContinuousMode) rearmLastTool(map); } catch (_) {}
+            } catch (err) {
+                console.warn('[draw] cancel radial marker failed', err);
             }
         });
 
