@@ -136,7 +136,8 @@ npm run build:userscript:emit
 - [x] Sync current map view (toolbar button) and presence follow.
 - [x] Fix toolbar blocking clicks and improve readability; larger edit vertices.
 - [x] Font Awesome marker icons with radial picker; remember choice.
-- [ ] Undo/redo (Ctrl+Z / Ctrl+Y).
+- [x] Undo/redo (Ctrl+Z / Ctrl+Y).
+- [x] Add quick delete/edit for shapes
 - [ ] Edit sync in progress (move vertices, move entire shape), not just on edit end.
 - [ ] Mortar workflow: shared targets with per‑client movable local marker.
 - [ ] Squad specific features: spawn points, rally points, FOBs, etc. with a corresponding radius that is pre-scaled.

@@ -25,6 +25,12 @@ let __undoStack = [];
 let __redoStack = [];
 let __undoListenerAdded = false;
 
+let __hoveredLayer = null; // Track currently hovered layer
+let __lastMouseLatLng = null; // Track last mouse position over the map
+let __mapMouseMoveHandlerAdded = false;
+let __activeEditedLayer = null; // Enforce single active edit layer
+const __editEmitDebounceMs = 150; // debounce edits to avoid flooding
+
 function __isActiveMapPath() {
     try {
         const p = (window.location && (window.location.pathname || '')) || '';
@@ -35,10 +41,259 @@ function __isActiveMapPath() {
     }
 }
 
-// Setup undo/redo key listener functions
+function __findLayerAtLatLng(latlng) {
+    if (!window.squadMap || !window.squadMap.__squadmapsDrawnItems) return null;
+    let found = null;
+    window.squadMap.__squadmapsDrawnItems.eachLayer(function(layer) {
+        if (layer.getBounds && layer.getBounds().contains(latlng)) {
+            found = layer;
+        } else if (layer.getLatLng && layer.getLatLng().equals && layer.getLatLng().equals(latlng)) {
+            found = layer;
+        } else if (layer.getLatLng && layer.getLatLng().distanceTo && latlng.distanceTo(layer.getLatLng()) < 10) {
+            found = layer;
+        }
+    });
+    return found;
+}
+
+function __layerFromEventOrCursor(e) {
+    try {
+        const map = (typeof window !== 'undefined' && window.squadMap) || null;
+        if (!map) return null;
+        // Prefer currently hovered layer when available
+        if (__hoveredLayer) return __hoveredLayer;
+        // If this is a mouse event with coordinates, use that
+        if (e && typeof e.clientX === 'number' && typeof e.clientY === 'number') {
+            try {
+                const point = map.mouseEventToContainerPoint(e);
+                const latlng = map.containerPointToLatLng(point);
+                return __findLayerAtLatLng(latlng);
+            } catch (_) {}
+        }
+        // Fallback to last recorded mouse position over the map
+        if (__lastMouseLatLng) return __findLayerAtLatLng(__lastMouseLatLng);
+    } catch (_) {}
+    return null;
+}
+
+function __addLayerHoverListener(layer) {
+    try {
+        if (!layer || layer.__squadHoverBound) return;
+        layer.__squadHoverBound = true;
+        // Mark hovered layer on mouseover/out for precise targeting
+        layer.on && layer.on('mouseover', function () {
+            try { __hoveredLayer = layer; } catch (_) {}
+        });
+        layer.on && layer.on('mouseout', function () {
+            try { if (__hoveredLayer === layer) __hoveredLayer = null; } catch (_) {}
+        });
+    } catch (_) {}
+}
+
+function __dedupAndEmitLayerEdit(layer) {
+    try {
+        if (!layer || !layer._drawSyncId || !__emitRef || !__emitRef.drawEdit) return;
+        const feature = layerToSerializable(layer);
+        const id = layer._drawSyncId;
+        const map = (typeof window !== 'undefined' && window.squadMap) || null;
+        if (!map) return;
+        const store = map.__squadmapsLastEditSigById || (map.__squadmapsLastEditSigById = {});
+        const sig = JSON.stringify(feature || {});
+        if (store[id] === sig) return;
+        store[id] = sig;
+        try { __emitRef.drawEdit([{id, geojson: feature}]); } catch (_) {}
+    } catch (_) {}
+}
+
+function __scheduleEmitLayerEdit(layer, delay = __editEmitDebounceMs) {
+    try {
+        if (!layer) return;
+        if (layer.__squadEditEmitTimer) clearTimeout(layer.__squadEditEmitTimer);
+        layer.__squadEditEmitTimer = setTimeout(() => {
+            try { __dedupAndEmitLayerEdit(layer); } catch (_) {}
+        }, Math.max(0, delay));
+    } catch (_) {}
+}
+
+function __flushLayerEditEmit(layer) {
+    try {
+        if (!layer) return;
+        if (layer.__squadEditEmitTimer) clearTimeout(layer.__squadEditEmitTimer);
+        __dedupAndEmitLayerEdit(layer);
+    } catch (_) {}
+}
+
+function __attachPerLayerEditEmit(layer) {
+    try {
+        if (!layer || layer.__squadEditEmitBound) return;
+        layer.__squadEditEmitBound = true;
+        const onEdited = () => __scheduleEmitLayerEdit(layer);
+        const onMoved = () => __scheduleEmitLayerEdit(layer);
+        layer.__squadOnEdited = onEdited;
+        layer.__squadOnMoved = onMoved;
+        if (layer.on) {
+            // Vectors emit 'edit' when vertices/shape change
+            layer.on('edit', onEdited);
+            // Markers emit 'moveend' after dragging
+            layer.on('moveend', onMoved);
+        }
+    } catch (_) {}
+}
+
+function __detachPerLayerEditEmit(layer) {
+    try {
+        if (!layer || !layer.__squadEditEmitBound) return;
+        if (layer.off) {
+            if (layer.__squadOnEdited) layer.off('edit', layer.__squadOnEdited);
+            if (layer.__squadOnMoved) layer.off('moveend', layer.__squadOnMoved);
+        }
+        if (layer.__squadEditEmitTimer) clearTimeout(layer.__squadEditEmitTimer);
+        delete layer.__squadEditEmitTimer;
+        delete layer.__squadOnEdited;
+        delete layer.__squadOnMoved;
+        delete layer.__squadEditEmitBound;
+    } catch (_) {}
+}
+
+function __isLayerEditing(layer) {
+    try {
+        if (!layer || !layer.editing) return false;
+        if (typeof layer.editing.enabled === 'function') return !!layer.editing.enabled();
+        if ('_enabled' in layer.editing) return !!layer.editing._enabled;
+    } catch (_) {}
+    return false;
+}
+
+function __stopEditingActiveLayer(suppressEmit = false) {
+    try {
+        const l = __activeEditedLayer;
+        if (!l) return;
+        // Emit final state unless explicitly suppressed (e.g., on delete)
+        if (!suppressEmit) {
+            try { __flushLayerEditEmit(l); } catch (_) {}
+        }
+        __detachPerLayerEditEmit(l);
+        if (l.editing && typeof l.editing.disable === 'function') {
+            try { l.editing.disable(); } catch (_) {}
+        }
+        if (l.dragging && typeof l.dragging.disable === 'function') {
+            try { l.dragging.disable(); } catch (_) {}
+        }
+    } catch (_) {}
+    __activeEditedLayer = null;
+    try { restorePointerBlockers(); } catch (_) {}
+}
+
+function __startEditingLayer(layer) {
+    const map = (typeof window !== 'undefined' && window.squadMap) || null;
+    if (!map || !layer) return;
+    // Disable editing on any other layers to enforce single-active editing
+    try {
+        const group = map.__squadmapsDrawnItems;
+        if (group && group.eachLayer) {
+            group.eachLayer(l => {
+                try {
+                    if (l !== layer && l.editing && (typeof l.editing.disable === 'function') && __isLayerEditing(l)) {
+                        l.editing.disable();
+                    }
+                    if (l !== layer && l.dragging && typeof l.dragging.disable === 'function') {
+                        l.dragging.disable();
+                    }
+                    if (l !== layer) __detachPerLayerEditEmit(l);
+                } catch (_) {}
+            });
+        }
+    } catch (_) {}
+    // Enable appropriate editing for the target
+    if (layer.editing && typeof layer.editing.enable === 'function') {
+        try { layer.editing.enable(); } catch (_) {}
+    } else if (layer.dragging && typeof layer.dragging.enable === 'function') {
+        try { layer.dragging.enable(); } catch (_) {}
+    }
+    __attachPerLayerEditEmit(layer);
+    try { layer.bringToFront && layer.bringToFront(); } catch (_) {}
+    __activeEditedLayer = layer;
+    try { disablePointerBlockers(map); } catch (_) {}
+}
+
+function __editLayerAtEvent(e) {
+    const map = (typeof window !== 'undefined' && window.squadMap) || null;
+    const layer = __layerFromEventOrCursor(e);
+    if (map && layer) {
+        console.log('[draw] __editLayerAtEvent: found layer', layer);
+        // Toggle if the same layer is already active
+        if (__activeEditedLayer && __activeEditedLayer === layer) {
+            __stopEditingActiveLayer();
+            console.log('[draw] Stopped editing current layer:', layer._drawSyncId);
+            return;
+        }
+        // Stop any previous and start editing this one
+        __stopEditingActiveLayer();
+        __startEditingLayer(layer);
+        if (__isLayerEditing(layer) || (layer.dragging && layer.dragging._enabled)) {
+            console.log('[draw] Editing layer at event:', layer._drawSyncId);
+        } else {
+            console.log('[draw] Edit not available for layer at event');
+        }
+    } else {
+        console.log('[draw] __editLayerAtEvent: missing map or event');
+    }
+}
+
+function __deleteLayerAtEvent(e) {
+    const map = (typeof window !== 'undefined' && window.squadMap) || null;
+    const group = map && map.__squadmapsDrawnItems;
+    const layer = __layerFromEventOrCursor(e);
+    if (map && group && layer) {
+        console.log('[draw] __deleteLayerAtEvent: found layer', layer);
+        // If deleting the active edited layer, stop editing first (without emitting)
+        if (__activeEditedLayer && __activeEditedLayer === layer) {
+            __stopEditingActiveLayer(true);
+        }
+        // Capture for undo before removal
+        const id = layer._drawSyncId;
+        const serialized = layerToSerializable(layer);
+        try { group.removeLayer(layer); } catch (_) {}
+        try {
+            map.__squadmapsLayerIdMap = map.__squadmapsLayerIdMap || {};
+            if (id) delete map.__squadmapsLayerIdMap[id];
+        } catch (_) {}
+        if (id && __emitRef && __emitRef.drawDelete) {
+            try { __emitRef.drawDelete([id]); } catch (_) {}
+        }
+        if (serialized && id) {
+            try {
+                __undoStack.push({action: 'delete', layers: [{id, feature: serialized}]});
+                __redoStack = [];
+            } catch (_) {}
+        }
+        console.log('[draw] Deleted layer at event:', id || '(no id)');
+    } else {
+        console.log('[draw] __deleteLayerAtEvent: missing map or event');
+    }
+}
+
 function __handleKeydown(e) {
-    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); __undo(); }
-    else if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); __redo(); }
+    // Undo/redo
+    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        __undo();
+    } else if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        __redo();
+    }
+    // Delete layer at mouse event
+    else if ((e.key === 'Delete' || e.key === 'Backspace' || e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        console.log('[draw] __handleKeydown: delete key pressed', e.key);
+        __deleteLayerAtEvent(e);
+    }
+    // Edit layer at mouse event
+    else if ((e.key === 'e' || e.key === 'E' || e.key === 'Enter')) {
+        e.preventDefault();
+        console.log('[draw] __handleKeydown: edit key pressed', e.key);
+        __editLayerAtEvent(e);
+    }
 }
 
 function __addUndoListener() {
@@ -57,7 +312,10 @@ function __undo() {
         if (!group) return;
         if (op.action === 'create') {
             const layer = map.__squadmapsLayerIdMap && map.__squadmapsLayerIdMap[op.id];
-            if (layer) { group.removeLayer(layer); delete map.__squadmapsLayerIdMap[op.id]; }
+            if (layer) {
+                group.removeLayer(layer);
+                delete map.__squadmapsLayerIdMap[op.id];
+            }
             if (__emitRef && __emitRef.drawDelete) __emitRef.drawDelete([op.id]);
             __redoStack.push(op);
         } else if (op.action === 'delete') {
@@ -77,7 +335,8 @@ function __undo() {
             });
             __redoStack.push(op);
         }
-    } catch (_) {}
+    } catch (_) {
+    }
 }
 
 function __redo() {
@@ -101,12 +360,17 @@ function __redo() {
             const ids = [];
             op.layers.forEach(item => {
                 const layer = map.__squadmapsLayerIdMap && map.__squadmapsLayerIdMap[item.id];
-                if (layer) { group.removeLayer(layer); delete map.__squadmapsLayerIdMap[item.id]; ids.push(item.id); }
+                if (layer) {
+                    group.removeLayer(layer);
+                    delete map.__squadmapsLayerIdMap[item.id];
+                    ids.push(item.id);
+                }
             });
             if (ids.length && __emitRef && __emitRef.drawDelete) __emitRef.drawDelete(ids);
             __undoStack.push(op);
         }
-    } catch (_) {}
+    } catch (_) {
+    }
 }
 
 function ensureLeafletDrawAssets() {
@@ -333,7 +597,22 @@ function ensureToolbarFixCss() {
 .leaflet-draw-toolbar.leaflet-bar { border: 0 !important; box-shadow: none !important; background: transparent !important; }
 `;
         document.head.appendChild(st);
-    } catch (_) {}
+    } catch (_) {
+    }
+}
+
+// Ensure vector layers (especially circles) remain interactive with Canvas renderer
+function ensureCircleInteractiveCss() {
+    try {
+        const id = 'squadmaps-circle-interactive-css';
+        if (document.getElementById(id)) return;
+        const st = document.createElement('style');
+        st.id = id;
+        // Keep pointer events enabled on interactive vector layers (Leaflet adds .leaflet-interactive)
+        st.textContent = `.leaflet-canvas path.leaflet-interactive, .leaflet-overlay-pane svg path.leaflet-interactive { pointer-events: auto !important; }`;
+        document.head.appendChild(st);
+    } catch (_) {
+    }
 }
 
 function ensureFAMarkerCss() {
@@ -373,53 +652,88 @@ function faDivIcon(iconName, colorHex) {
 }
 
 function __hostWindow() {
-  try { return (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window; } catch (_) { return window; }
+    try {
+        return (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+    } catch (_) {
+        return window;
+    }
 }
 
 function __fallbackFindExistingMap() {
-  try {
-    const W = __hostWindow();
-    // Prefer exact instance check when L is available
-    if (W && W.L && W.L.Map) {
-      if (W.squadMap && W.squadMap instanceof W.L.Map) return W.squadMap;
-      const keys = Object.keys(W);
-      for (let i = 0; i < keys.length; i++) {
-        const k = keys[i];
-        try {
-          const v = W[k];
-          if (v && v instanceof W.L.Map) {
-            try { W.squadMap = v; } catch (_) {}
-            try { window.squadMap = v; } catch (_) {}
-            if (!__loggedMapScanOnce) { try { console.log('[draw] captured existing map via window scan at', k); } catch(_) {} __loggedMapScanOnce = true; }
-            return v;
-          }
-        } catch (_) {}
-      }
+    try {
+        const W = __hostWindow();
+        // Prefer exact instance check when L is available
+        if (W && W.L && W.L.Map) {
+            if (W.squadMap && W.squadMap instanceof W.L.Map) return W.squadMap;
+            const keys = Object.keys(W);
+            for (let i = 0; i < keys.length; i++) {
+                const k = keys[i];
+                try {
+                    const v = W[k];
+                    if (v && v instanceof W.L.Map) {
+                        try {
+                            W.squadMap = v;
+                        } catch (_) {
+                        }
+                        try {
+                            window.squadMap = v;
+                        } catch (_) {
+                        }
+                        if (!__loggedMapScanOnce) {
+                            try {
+                                console.log('[draw] captured existing map via window scan at', k);
+                            } catch (_) {
+                            }
+                            __loggedMapScanOnce = true;
+                        }
+                        return v;
+                    }
+                } catch (_) {
+                }
+            }
+        }
+        // Heuristic: L may not be global; detect by shape
+        if (W) {
+            const keys = Object.keys(W);
+            for (let i = 0; i < keys.length; i++) {
+                const k = keys[i];
+                let v;
+                try {
+                    v = W[k];
+                } catch (_) {
+                    continue;
+                }
+                try {
+                    if (!v || typeof v !== 'object') continue;
+                    const hasMethods = typeof v.on === 'function' && typeof v.addLayer === 'function' && typeof v.removeLayer === 'function';
+                    const hasView = typeof v.setView === 'function' || typeof v.panTo === 'function' || typeof v.fitBounds === 'function';
+                    const cont = v._container;
+                    const looksLikeContainer = cont && cont.nodeType === 1 && cont.classList && cont.classList.contains('leaflet-container');
+                    if (hasMethods && hasView && looksLikeContainer) {
+                        try {
+                            W.squadMap = v;
+                        } catch (_) {
+                        }
+                        try {
+                            window.squadMap = v;
+                        } catch (_) {
+                        }
+                        if (!__loggedMapScanOnce) {
+                            try {
+                                console.log('[draw] captured existing map via heuristic scan at', k);
+                            } catch (_) {
+                            }
+                            __loggedMapScanOnce = true;
+                        }
+                        return v;
+                    }
+                } catch (_) {
+                }
+            }
+        }
+    } catch (_) {
     }
-    // Heuristic: L may not be global; detect by shape
-    if (W) {
-      const keys = Object.keys(W);
-      for (let i = 0; i < keys.length; i++) {
-        const k = keys[i];
-        let v;
-        try { v = W[k]; } catch (_) { continue; }
-        try {
-          if (!v || typeof v !== 'object') continue;
-          const hasMethods = typeof v.on === 'function' && typeof v.addLayer === 'function' && typeof v.removeLayer === 'function';
-          const hasView = typeof v.setView === 'function' || typeof v.panTo === 'function' || typeof v.fitBounds === 'function';
-          const cont = v._container;
-          const looksLikeContainer = cont && cont.nodeType === 1 && cont.classList && cont.classList.contains('leaflet-container');
-          if (hasMethods && hasView && looksLikeContainer) {
-            try { W.squadMap = v; } catch (_) {}
-            try { window.squadMap = v; } catch (_) {}
-            if (!__loggedMapScanOnce) { try { console.log('[draw] captured existing map via heuristic scan at', k); } catch(_) {} __loggedMapScanOnce = true; }
-            return v;
-          }
-        } catch (_) {}
-      }
-    }
-  } catch (_) {}
-  return null;
+    return null;
 }
 
 function waitForMap() {
@@ -497,68 +811,99 @@ function hasToolbarDom(map) {
 
 // Ensure a draw toolbar is attached to the given map and configured with current color
 function ensureToolbarPresent(map) {
-  try {
-    // Skip ensuring toolbar on non-map selector routes to avoid spam
-    if (!__isActiveMapPath()) {
-      try {
-        const prev = map && map.__squadmapsDrawControl;
-        if (prev && map) { try { map.removeControl(prev); } catch (_) {} try { map.__squadmapsDrawControl = null; } catch(_) {} }
-      } catch (_) {}
-      return;
-    }
-    if (!map || !window.L || !L.Control || !L.Control.Draw) { try { console.log('[draw] ensureToolbarPresent: Draw not ready'); } catch(_) {} return; }
-    const group = ensureFeatureGroup(map);
-
-    const curCtrl = map.__squadmapsDrawControl || null;
-    const toolbarInDom = hasToolbarDom(map);
-
-    if (!curCtrl || !toolbarInDom) {
-      try { console.log('[draw] (re)adding draw control; hadCtrl=', !!curCtrl, 'toolbarInDom=', toolbarInDom); } catch(_) {}
-      try {
-        if (curCtrl) { try { map.removeControl(curCtrl); } catch (_) {} map.__squadmapsDrawControl = null; }
-      } catch (_) {}
-      const baseColor = (typeof window !== 'undefined' && window.userColor) || '#ff6600';
-      const ctrl = setupToolbar(map, group, baseColor);
-      try { console.log('[draw] draw control ready', !!ctrl); } catch(_) {}
-      return;
-    }
-
-    // Update live options
     try {
-      const c = ((typeof window !== 'undefined' && window.userColor) || '#ff6600').toLowerCase();
-      const d = curCtrl.options && curCtrl.options.draw ? curCtrl.options.draw : null;
-      if (d) {
-        ['polyline', 'polygon', 'rectangle', 'circle'].forEach(k => {
-          try {
-            if (d[k] && d[k].shapeOptions) {
-              d[k].shapeOptions.color = c;
-              if (d[k].shapeOptions.fillColor !== undefined) d[k].shapeOptions.fillColor = c;
-              d[k].shapeOptions.opacity = 1;
+        // Skip ensuring toolbar on non-map selector routes to avoid spam
+        if (!__isActiveMapPath()) {
+            try {
+                const prev = map && map.__squadmapsDrawControl;
+                if (prev && map) {
+                    try {
+                        map.removeControl(prev);
+                    } catch (_) {
+                    }
+                    try {
+                        map.__squadmapsDrawControl = null;
+                    } catch (_) {
+                    }
+                }
+            } catch (_) {
             }
-          } catch (_) {}
-        });
-        // Ensure marker icon reflects color and current icon name if provided by markers module
+            return;
+        }
+        if (!map || !window.L || !L.Control || !L.Control.Draw) {
+            try {
+                console.log('[draw] ensureToolbarPresent: Draw not ready');
+            } catch (_) {
+            }
+            return;
+        }
+        const group = ensureFeatureGroup(map);
+
+        const curCtrl = map.__squadmapsDrawControl || null;
+        const toolbarInDom = hasToolbarDom(map);
+
+        if (!curCtrl || !toolbarInDom) {
+            try {
+                console.log('[draw] (re)adding draw control; hadCtrl=', !!curCtrl, 'toolbarInDom=', toolbarInDom);
+            } catch (_) {
+            }
+            try {
+                if (curCtrl) {
+                    try {
+                        map.removeControl(curCtrl);
+                    } catch (_) {
+                    }
+                    map.__squadmapsDrawControl = null;
+                }
+            } catch (_) {
+            }
+            const baseColor = (typeof window !== 'undefined' && window.userColor) || '#ff6600';
+            const ctrl = setupToolbar(map, group, baseColor);
+            try {
+                console.log('[draw] draw control ready', !!ctrl);
+            } catch (_) {
+            }
+            return;
+        }
+
+        // Update live options
         try {
-          const iconName = (d.marker && d.marker.iconName) || (window.__squadMarkerIconName) || 'crosshairs';
-          d.marker = d.marker || {};
-          d.marker.icon = faDivIcon(iconName, c);
-          d.marker.iconName = iconName;
+            const c = ((typeof window !== 'undefined' && window.userColor) || '#ff6600').toLowerCase();
+            const d = curCtrl.options && curCtrl.options.draw ? curCtrl.options.draw : null;
+            if (d) {
+                ['polyline', 'polygon', 'rectangle', 'circle'].forEach(k => {
+                    try {
+                        if (d[k] && d[k].shapeOptions) {
+                            d[k].shapeOptions.color = c;
+                            if (d[k].shapeOptions.fillColor !== undefined) d[k].shapeOptions.fillColor = c;
+                            d[k].shapeOptions.opacity = 1;
+                        }
+                    } catch (_) {
+                    }
+                });
+                // Ensure marker icon reflects color and current icon name if provided by markers module
+                try {
+                    const iconName = (d.marker && d.marker.iconName) || (window.__squadMarkerIconName) || 'crosshairs';
+                    d.marker = d.marker || {};
+                    d.marker.icon = faDivIcon(iconName, c);
+                    d.marker.iconName = iconName;
+                } catch (_) {
+                }
+            }
+            // Ensure offset CSS exists
+            try {
+                ensureToolbarOffsetCss(100);
+            } catch (_) {
+            }
+            // Ensure toolbar UI fixes are present
+            try {
+                ensureToolbarFixCss();
+            } catch (_) {
+            }
         } catch (_) {
         }
-      }
-      // Ensure offset CSS exists
-      try {
-        ensureToolbarOffsetCss(100);
-      } catch (_) {
-      }
-      // Ensure toolbar UI fixes are present
-      try {
-        ensureToolbarFixCss();
-      } catch (_) {}
     } catch (_) {
     }
-  } catch (_) {
-  }
 }
 
 // Observe DOM changes in the map container and re-ensure toolbar if it disappears
@@ -594,61 +939,100 @@ function observeToolbar(map) {
 
 // One-time: hook Leaflet map creation to ensure toolbar on new instances (SPA / remote changes)
 (function hookLeafletInit() {
-  try {
-    if (__hookedInitOnce) return;
-    let tries = 0;
-    const tryInstall = () => {
-      try {
-        if (__hookedInitOnce) return; // already installed
-        const W = __hostWindow();
-        if (!W || !W.L || !W.L.Map) {
-          if (tries++ < 200) return; // ~40s max at 200ms
-          return;
-        }
-        if (W.L.Map && typeof W.L.Map.addInitHook === 'function') {
-          W.L.Map.addInitHook(function() {
+    try {
+        if (__hookedInitOnce) return;
+        let tries = 0;
+        const tryInstall = () => {
             try {
-              try { W.squadMap = this; } catch (_) {}
-              try { window.squadMap = this; } catch (_) {}
-              try { console.log('[draw] map init fired'); } catch(_) {}
-              ensureFeatureGroup(this);
-              ensureProgressGroup(this);
-              try { ensureLeafletDrawAssets(); } catch(_) {}
-              try { if (typeof recheckDrawToolbar === 'function') recheckDrawToolbar(); else ensureToolbarPresent(this); } catch (_) { try { ensureToolbarPresent(this); } catch(__) {} }
-              observeToolbar(this);
-            } catch (_) {}
-          });
-          // Also capture map on any event fired by a Map instance (covers SPA swaps without new init)
-          try {
-            if (W.L.Evented && !W.L.Evented.__squadEventedCapturePatched) {
-              const origFire = W.L.Evented.prototype.fire;
-              if (typeof origFire === 'function') {
-                W.L.Evented.prototype.fire = function(type, data, propagate) {
-                  try {
-                    if (this && W.L && W.L.Map && this instanceof W.L.Map) {
-                      try { W.squadMap = this; } catch (_) {}
-                      try { window.squadMap = this; } catch (_) {}
+                if (__hookedInitOnce) return; // already installed
+                const W = __hostWindow();
+                if (!W || !W.L || !W.L.Map) {
+                    if (tries++ < 200) return; // ~40s max at 200ms
+                    return;
+                }
+                if (W.L.Map && typeof W.L.Map.addInitHook === 'function') {
+                    W.L.Map.addInitHook(function () {
+                        try {
+                            try {
+                                W.squadMap = this;
+                            } catch (_) {
+                            }
+                            try {
+                                window.squadMap = this;
+                            } catch (_) {
+                            }
+                            try {
+                                console.log('[draw] map init fired');
+                            } catch (_) {
+                            }
+                            ensureFeatureGroup(this);
+                            ensureProgressGroup(this);
+                            try {
+                                ensureLeafletDrawAssets();
+                            } catch (_) {
+                            }
+                            try {
+                                if (typeof recheckDrawToolbar === 'function') recheckDrawToolbar(); else ensureToolbarPresent(this);
+                            } catch (_) {
+                                try {
+                                    ensureToolbarPresent(this);
+                                } catch (__) {
+                                }
+                            }
+                            observeToolbar(this);
+                        } catch (_) {
+                        }
+                    });
+                    // Also capture map on any event fired by a Map instance (covers SPA swaps without new init)
+                    try {
+                        if (W.L.Evented && !W.L.Evented.__squadEventedCapturePatched) {
+                            const origFire = W.L.Evented.prototype.fire;
+                            if (typeof origFire === 'function') {
+                                W.L.Evented.prototype.fire = function (type, data, propagate) {
+                                    try {
+                                        if (this && W.L && W.L.Map && this instanceof W.L.Map) {
+                                            try {
+                                                W.squadMap = this;
+                                            } catch (_) {
+                                            }
+                                            try {
+                                                window.squadMap = this;
+                                            } catch (_) {
+                                            }
+                                        }
+                                    } catch (_) {
+                                    }
+                                    return origFire.call(this, type, data, propagate);
+                                };
+                                W.L.Evented.__squadEventedCapturePatched = true;
+                                try {
+                                    console.log('[draw] patched Evented.fire for map capture');
+                                } catch (_) {
+                                }
+                            }
+                        }
+                    } catch (_) {
                     }
-                  } catch (_) {}
-                  return origFire.call(this, type, data, propagate);
-                };
-                W.L.Evented.__squadEventedCapturePatched = true;
-                try { console.log('[draw] patched Evented.fire for map capture'); } catch(_) {}
-              }
+                    __hookedInitOnce = true;
+                    try {
+                        console.log('[draw] installed map init hook');
+                    } catch (_) {
+                    }
+                }
+            } catch (_) {
             }
-          } catch (_) {}
-          __hookedInitOnce = true;
-          try { console.log('[draw] installed map init hook'); } catch(_) {}
-        }
-      } catch (_) {}
-    };
-    tryInstall();
-    const t = setInterval(() => {
-      if (__hookedInitOnce) { clearInterval(t); return; }
-      tryInstall();
-      if (__hookedInitOnce) clearInterval(t);
-    }, 200);
-  } catch (_) {}
+        };
+        tryInstall();
+        const t = setInterval(() => {
+            if (__hookedInitOnce) {
+                clearInterval(t);
+                return;
+            }
+            tryInstall();
+            if (__hookedInitOnce) clearInterval(t);
+        }, 200);
+    } catch (_) {
+    }
 })();
 
 // ---- Serialization helpers ----
@@ -830,7 +1214,7 @@ function setupToolbar(map, group, baseColor) {
             polygon: {shapeOptions: {color, weight: 2, opacity: 1, fillColor: color, fillOpacity: 0.3}},
             rectangle: {shapeOptions: {color, weight: 2, opacity: 1, fillColor: color, fillOpacity: 0.2}},
             circle: {shapeOptions: {color, weight: 2, opacity: 1, fillColor: color, fillOpacity: 0.2}},
-            marker: { icon: faDivIcon('crosshairs', color) },
+            marker: {icon: faDivIcon('crosshairs', color)},
             circlemarker: false
         }
     });
@@ -843,16 +1227,25 @@ function setupToolbar(map, group, baseColor) {
     } catch (_) {
     }
     // Remember default icon name for marker tool so live updates maintain crosshairs when no user choice
-    try { if (ctrl && ctrl.options && ctrl.options.draw) ctrl.options.draw.marker.iconName = 'crosshairs'; } catch(_) {}
+    try {
+        if (ctrl && ctrl.options && ctrl.options.draw) ctrl.options.draw.marker.iconName = 'crosshairs';
+    } catch (_) {
+    }
     // Prevent toolbar from overlapping site UI
     try {
         ensureToolbarOffsetCss(100);
     } catch (_) {
     }
     // Also ensure toolbar CSS fixes are present
-    try { ensureToolbarFixCss(); } catch (_) {}
+    try {
+        ensureToolbarFixCss();
+    } catch (_) {
+    }
     // Ensure circles remain interactive when Canvas renderer is used
-    try { ensureCircleInteractiveCss(); } catch (_) {}
+    try {
+        ensureCircleInteractiveCss();
+    } catch (_) {
+    }
     // Notify other modules that toolbar is ready (for extras, etc.)
     try {
         window.dispatchEvent(new CustomEvent('squadmaps:drawToolbarReady', {detail: {map, control: ctrl}}));
@@ -1030,7 +1423,14 @@ export function initDraw(deps = {}) {
         __mapRef = map;
 
         // Ensure Leaflet.Draw is present or request assets
-        if (!(L && L.Control && L.Control.Draw)) { try { console.log('[draw] waiting for Leaflet.Draw assets'); } catch(_) {} ensureLeafletDrawAssets(); return false; }
+        if (!(L && L.Control && L.Control.Draw)) {
+            try {
+                console.log('[draw] waiting for Leaflet.Draw assets');
+            } catch (_) {
+            }
+            ensureLeafletDrawAssets();
+            return false;
+        }
 
         // Always ensure feature/progress groups exist on the current map
         const group = ensureFeatureGroup(map);
@@ -1080,13 +1480,14 @@ export function initDraw(deps = {}) {
         // Also manage pointer blockers for edit mode
         map.on('draw:editstart', () => {
             try {
+                __activeEditedLayer = null; // reset manual tracking when toolbar edit mode begins
                 disablePointerBlockers(map);
             } catch (_) {
             }
         });
         map.on('draw:editstop', () => {
             try {
-                restorePointerBlockers();
+                __stopEditingActiveLayer();
             } catch (_) {
             }
         });
@@ -1096,6 +1497,7 @@ export function initDraw(deps = {}) {
             try {
                 const layer = e.layer;
                 group.addLayer(layer);
+                __addLayerHoverListener(layer);
                 ensureLayerEditable(layer, false);
                 // If a marker was placed, open the radial icon selector
                 try {
@@ -1112,7 +1514,8 @@ export function initDraw(deps = {}) {
                 try {
                     const idMap = map.__squadmapsLayerIdMap || (map.__squadmapsLayerIdMap = {});
                     idMap[id] = layer;
-                } catch (_) {}
+                } catch (_) {
+                }
                 if (sig !== lastSig) {
                     emit.drawCreate && emit.drawCreate({id, geojson: feature});
                     map.__squadmapsLastCreateSig = sig;
@@ -1177,8 +1580,14 @@ export function initDraw(deps = {}) {
                     // Remove from local id map as well
                     try {
                         const idMap = map.__squadmapsLayerIdMap || (map.__squadmapsLayerIdMap = {});
-                        ids.forEach((id) => { try { delete idMap[id]; } catch (_) {} });
-                    } catch (_) {}
+                        ids.forEach((id) => {
+                            try {
+                                delete idMap[id];
+                            } catch (_) {
+                            }
+                        });
+                    } catch (_) {
+                    }
                     emit.drawDelete && emit.drawDelete(ids);
                 }
             } catch (err) {
@@ -1228,8 +1637,14 @@ export function initDraw(deps = {}) {
                             // Remove from local id map too so we stay consistent
                             const mapRef = (typeof window !== 'undefined' && window.squadMap) || null;
                             const idMap = mapRef && (mapRef.__squadmapsLayerIdMap || (mapRef.__squadmapsLayerIdMap = {}));
-                            if (idMap && ids.length) ids.forEach((id) => { try { delete idMap[id]; } catch (_) {} });
-                        } catch (_) {}
+                            if (idMap && ids.length) ids.forEach((id) => {
+                                try {
+                                    delete idMap[id];
+                                } catch (_) {
+                                }
+                            });
+                        } catch (_) {
+                        }
                         try {
                             if (ids.length && emit && emit.drawDelete) emit.drawDelete(ids);
                         } catch (_) {
@@ -1286,7 +1701,27 @@ export function initDraw(deps = {}) {
         // Initialize undo/redo listener
         __addUndoListener();
 
-    return true;
+        // Track mouse position over the map for keyboard-based edit/delete
+        try {
+            if (!__mapMouseMoveHandlerAdded) {
+                map.on('mousemove', (mv) => {
+                    try { __lastMouseLatLng = mv && mv.latlng ? mv.latlng : null; } catch (_) {}
+                });
+                __mapMouseMoveHandlerAdded = true;
+            }
+        } catch (_) {}
+
+        // Attach hover listeners to existing and future layers
+        try {
+            group.eachLayer && group.eachLayer(l => { try { __addLayerHoverListener(l); } catch (_) {} });
+            if (!group.__squadHoverAddBound) {
+                group.on && group.on('layeradd', (ev) => { try { __addLayerHoverListener(ev && ev.layer); } catch (_) {} });
+                group.on && group.on('layerremove', (ev) => { try { if (__hoveredLayer === (ev && ev.layer)) __hoveredLayer = null; } catch (_) {} });
+                group.__squadHoverAddBound = true;
+            }
+        } catch (_) {}
+
+        return true;
     };
 
     if (start()) return;
@@ -1320,6 +1755,7 @@ export function applyRemoteDrawCreate(shape) {
             layer._drawSyncId = shape.id;
             idMap[shape.id] = layer;
             group.addLayer(layer);
+            __addLayerHoverListener(layer); // Ensure hover logic is attached
             // Keep editing disabled by default; edit toolbar will enable when active
             ensureLayerEditable(layer, false);
         }
@@ -1355,6 +1791,7 @@ export function applyRemoteDrawEdit(shapes) {
                 nl._drawSyncId = s.id;
                 idMap[s.id] = nl;
                 group.addLayer(nl);
+                __addLayerHoverListener(nl); // Ensure hover logic is attached
                 ensureLayerEditable(nl, false);
             }
         });
@@ -1532,30 +1969,55 @@ export function applyRemoteDrawProgress(p) {
 
 // Public helper to re-ensure the toolbar from outside this module
 export function recheckDrawToolbar() {
-  try {
-    const W = __hostWindow();
-    let map = (typeof W !== 'undefined' && W.squadMap) || null;
-    if (!map) {
-      map = __fallbackFindExistingMap();
-    }
-    if (!map) { try { console.log('[draw] recheck: no map'); } catch(_) {} return; }
-    if (!__isActiveMapPath()) { try { console.log('[draw] recheck: skip on non-map path'); } catch(_) {} return; }
-    const tryEnsure = (attempt = 0) => {
-      try {
-        if (!W.L || !W.L.Control || !W.L.Control.Draw) {
-          if (attempt === 0) { try { console.log('[draw] recheck: Draw not ready, requesting assets'); } catch(_) {} }
-          ensureLeafletDrawAssets();
-          if (attempt < 20) return void setTimeout(() => tryEnsure(attempt + 1), 200);
-          try { console.log('[draw] recheck: giving up waiting for Draw'); } catch(_) {}
-          return;
+    try {
+        const W = __hostWindow();
+        let map = (typeof W !== 'undefined' && W.squadMap) || null;
+        if (!map) {
+            map = __fallbackFindExistingMap();
         }
-        ensureFeatureGroup(map);
-        ensureProgressGroup(map);
-        ensureToolbarPresent(map);
-        observeToolbar(map);
-        try { console.log('[draw] recheck: toolbar ensured'); } catch(_) {}
-      } catch (_) {}
-    };
-    tryEnsure(0);
-  } catch (_) {}
+        if (!map) {
+            try {
+                console.log('[draw] recheck: no map');
+            } catch (_) {
+            }
+            return;
+        }
+        if (!__isActiveMapPath()) {
+            try {
+                console.log('[draw] recheck: skip on non-map path');
+            } catch (_) {
+            }
+            return;
+        }
+        const tryEnsure = (attempt = 0) => {
+            try {
+                if (!W.L || !W.L.Control || !W.L.Control.Draw) {
+                    if (attempt === 0) {
+                        try {
+                            console.log('[draw] recheck: Draw not ready, requesting assets');
+                        } catch (_) {
+                        }
+                    }
+                    ensureLeafletDrawAssets();
+                    if (attempt < 20) return void setTimeout(() => tryEnsure(attempt + 1), 200);
+                    try {
+                        console.log('[draw] recheck: giving up waiting for Draw');
+                    } catch (_) {
+                    }
+                    return;
+                }
+                ensureFeatureGroup(map);
+                ensureProgressGroup(map);
+                ensureToolbarPresent(map);
+                observeToolbar(map);
+                try {
+                    console.log('[draw] recheck: toolbar ensured');
+                } catch (_) {
+                }
+            } catch (_) {
+            }
+        };
+        tryEnsure(0);
+    } catch (_) {
+    }
 }
