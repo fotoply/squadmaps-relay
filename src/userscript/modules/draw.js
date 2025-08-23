@@ -31,6 +31,8 @@ let __mapMouseMoveHandlerAdded = false;
 let __activeEditedLayer = null; // Enforce single active edit layer
 const __editEmitDebounceMs = 150; // debounce edits to avoid flooding
 let __toolbarEditModeActive = false; // Track Leaflet.Draw toolbar edit mode
+// Handle for marker manual editing (drag handle instead of the marker itself)
+const __markerHandleIconSize = 28;
 
 function __isActiveMapPath() {
     try {
@@ -44,15 +46,33 @@ function __isActiveMapPath() {
 
 function __findLayerAtLatLng(latlng) {
     if (!window.squadMap || !window.squadMap.__squadmapsDrawnItems) return null;
+    const map = window.squadMap;
     let found = null;
+    let bestPixDist = Infinity;
     window.squadMap.__squadmapsDrawnItems.eachLayer(function(layer) {
-        if (layer.getBounds && layer.getBounds().contains(latlng)) {
-            found = layer;
-        } else if (layer.getLatLng && layer.getLatLng().equals && layer.getLatLng().equals(latlng)) {
-            found = layer;
-        } else if (layer.getLatLng && layer.getLatLng().distanceTo && latlng.distanceTo(layer.getLatLng()) < 10) {
-            found = layer;
-        }
+        try {
+            // Prefer precise pixel-distance check for markers
+            if (layer.getLatLng && typeof layer.getLatLng === 'function' && layer instanceof L.Marker) {
+                const mll = layer.getLatLng();
+                const p1 = map.latLngToContainerPoint(latlng);
+                const p2 = map.latLngToContainerPoint(mll);
+                const dx = p1.x - p2.x, dy = p1.y - p2.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                // Consider within ~24px a hit (roughly the inner icon size)
+                if (dist <= 24 && dist < bestPixDist) { found = layer; bestPixDist = dist; }
+                return;
+            }
+            // Rectangles/polygons/circles/polylines: use bounds containment as heuristic
+            if (layer.getBounds && typeof layer.getBounds === 'function') {
+                const b = layer.getBounds();
+                if (b && b.contains && b.contains(latlng)) { found = layer; bestPixDist = 0; }
+                return;
+            }
+            // Fallback distance check for anything exposing a LatLng
+            if (layer.getLatLng && layer.getLatLng().distanceTo && latlng.distanceTo(layer.getLatLng()) < 15) {
+                found = layer; bestPixDist = 0;
+            }
+        } catch (_) {}
     });
     return found;
 }
@@ -174,6 +194,15 @@ function __stopEditingActiveLayer(suppressEmit = false) {
             try { __flushLayerEditEmit(l); } catch (_) {}
         }
         __detachPerLayerEditEmit(l);
+        // Remove marker drag handle if present
+        try {
+            if (l.__squadDragHandle) {
+                try { l.__squadDragHandle.off && l.__squadDragHandle.off(); } catch(_) {}
+                try { l.__squadDragHandle.remove && l.__squadDragHandle.remove(); } catch(_) {}
+                try { if (l.__squadDragHandle._map) l._map.removeLayer(l.__squadDragHandle); } catch(_) {}
+            }
+            delete l.__squadDragHandle;
+        } catch(_) {}
         if (l.editing && typeof l.editing.disable === 'function') {
             try { l.editing.disable(); } catch (_) {}
         }
@@ -201,12 +230,44 @@ function __startEditingLayer(layer) {
                         l.dragging.disable();
                     }
                     if (l !== layer) __detachPerLayerEditEmit(l);
+                    // Clean up any stray handles
+                    if (l !== layer && l.__squadDragHandle) {
+                        try { l.__squadDragHandle.off && l.__squadDragHandle.off(); } catch(_) {}
+                        try { l.__squadDragHandle.remove && l.__squadDragHandle.remove(); } catch(_) {}
+                        delete l.__squadDragHandle;
+                    }
                 } catch (_) {}
             });
         }
     } catch (_) {}
     // Enable appropriate editing for the target
-    if (layer.editing && typeof layer.editing.enable === 'function') {
+    if (layer instanceof L.Marker) {
+        // For markers, show a draggable handle instead of dragging the marker itself
+        try {
+            if (layer.dragging && typeof layer.dragging.disable === 'function') {
+                try { layer.dragging.disable(); } catch(_) {}
+            }
+            // Create handle if missing
+            if (!layer.__squadDragHandle) {
+                try {
+                    const col = ((typeof window !== 'undefined' && window.userColor) || '#ff6600');
+                    const html = `<div class="squad-fa-marker"><i class="fa-solid fa-up-down-left-right" style="color:${col};font-size:${Math.round(__markerHandleIconSize*0.7)}px;line-height:1"></i></div>`;
+                    const icon = L.divIcon({ className: 'leaflet-div-icon squad-fa-marker-wrap', html, iconSize: [__markerHandleIconSize,__markerHandleIconSize], iconAnchor: [__markerHandleIconSize/2,__markerHandleIconSize/2] });
+                    const handle = L.marker(layer.getLatLng(), { draggable: true, icon });
+                    handle.addTo(map);
+                    // Keep handle in sync with marker moves (remote edits)
+                    const syncFromMarker = () => { try { handle.setLatLng(layer.getLatLng()); } catch(_) {} };
+                    const syncToMarker = () => { try { layer.setLatLng(handle.getLatLng()); __scheduleEmitLayerEdit(layer, 0); } catch(_) {} };
+                    try { layer.on && layer.on('move', syncFromMarker); } catch(_) {}
+                    try { handle.on && handle.on('drag', syncToMarker); } catch(_) {}
+                    try { handle.on && handle.on('dragend', () => __scheduleEmitLayerEdit(layer, 0)); } catch(_) {}
+                    layer.__squadDragHandle = handle;
+                } catch(_) {}
+            } else {
+                try { layer.__squadDragHandle.setLatLng(layer.getLatLng()); } catch(_) {}
+            }
+        } catch(_) {}
+    } else if (layer.editing && typeof layer.editing.enable === 'function') {
         try { layer.editing.enable(); } catch (_) {}
     } else if (layer.dragging && typeof layer.dragging.enable === 'function') {
         try { layer.dragging.enable(); } catch (_) {}
@@ -438,15 +499,15 @@ function disablePointerBlockers(map) {
     try {
         if (!map || !map._container) return;
         __pointerBlockers = [];
-        map._container.querySelectorAll('canvas, .leaflet-triggers-pane, .Ground_ground__container__Hoq0Z').forEach(el => {
+        // Do NOT disable Leaflet's own canvases; only disable known overlay panes that steal clicks
+        map._container.querySelectorAll('.leaflet-triggers-pane, .Ground_ground__container__Hoq0Z').forEach(el => {
             try {
                 const pe = getComputedStyle(el).pointerEvents;
                 if (pe !== 'none') {
                     __pointerBlockers.push({el, prev: el.style.pointerEvents});
                     el.style.pointerEvents = 'none';
                 }
-            } catch (_) {
-            }
+            } catch (_) {}
         });
     } catch (_) {
     }
@@ -1519,11 +1580,14 @@ export function initDraw(deps = {}) {
                 grp && grp.eachLayer && grp.eachLayer(l => {
                     try { __flushLayerEditEmit(l); } catch (_) {}
                     try { __detachPerLayerEditEmit(l); } catch (_) {}
+                    // Clean up any stray marker handles
+                    try {
+                        if (l.__squadDragHandle) { l.__squadDragHandle.remove && l.__squadDragHandle.remove(); delete l.__squadDragHandle; }
+                    } catch(_) {}
                 });
                 __toolbarEditModeActive = false;
                 __stopEditingActiveLayer();
-            } catch (_) {
-            }
+            } catch (_) {}
         });
 
         // Core events
@@ -1680,17 +1744,30 @@ export function initDraw(deps = {}) {
             applyRemoveModeStyling(group, true);
             try {
                 disablePointerBlockers(map);
-            } catch (_) {
-            }
+            } catch (_) {}
         });
         map.on('draw:deletestop', () => {
             __removeModeActive = false;
             applyRemoveModeStyling(group, false);
             try {
                 restorePointerBlockers();
-            } catch (_) {
-            }
+            } catch (_) {}
         });
+
+        // Right-click should exit mass-edit/delete (acts like Save)
+        try {
+            if (!map.__squadContextExitBound) {
+                map.on('contextmenu', (ev) => {
+                    try {
+                        if (__toolbarEditModeActive || __removeModeActive) {
+                            ev && ev.originalEvent && ev.originalEvent.preventDefault && ev.originalEvent.preventDefault();
+                            __clickToolbarSave();
+                        }
+                    } catch(_) {}
+                });
+                map.__squadContextExitBound = true;
+            }
+        } catch(_) {}
 
         __drawInitOnce = true;
         console.log('[draw] tools initialized');

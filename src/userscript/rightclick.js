@@ -1,6 +1,55 @@
-// filepath: src/userscript/rightclick.js
 let __rcInitOnce = false;
 let __rcPatched = false;
+
+function tryExitMassEditDelete() {
+  try {
+    const map = (typeof window !== 'undefined' && window.squadMap) || null;
+    if (!map) return false;
+    const root = map._container || document;
+    // 1) Try clicking the visible Save button
+    try {
+      let btn = (root && root.querySelector && (root.querySelector('.leaflet-draw-actions .leaflet-draw-edit-save')
+        || root.querySelector('.leaflet-draw-actions a.leaflet-draw-edit-save')
+        || root.querySelector('[class*="leaflet-draw-edit-save"]')));
+      if (!btn && typeof document !== 'undefined') {
+        btn = document.querySelector('.leaflet-draw-actions .leaflet-draw-edit-save')
+          || document.querySelector('[class*="leaflet-draw-edit-save"]');
+      }
+      if (btn) {
+        try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return true; } catch(_) {}
+        try { btn.click(); return true; } catch(_) {}
+      }
+    } catch(_) {}
+
+    // 2) Fallback to the edit toolbar API
+    try {
+      const ctrl = map.__squadmapsDrawControl || null;
+      const editTb = ctrl && ctrl._toolbars && (ctrl._toolbars.edit || null);
+      if (!editTb) return false;
+      let acted = false;
+      try { if (typeof editTb._save === 'function') { editTb._save(); acted = true; } } catch(_) {}
+      // Disable to fully exit the mode
+      try {
+        if (typeof editTb.disable === 'function') editTb.disable();
+        else if (editTb._activeMode && editTb._activeMode.handler && typeof editTb._activeMode.handler.disable === 'function') {
+          editTb._activeMode.handler.disable();
+        }
+      } catch(_) {}
+      return acted;
+    } catch(_) { return false; }
+  } catch(_) { return false; }
+}
+
+function isMassEditDeleteActive() {
+  try {
+    const map = (typeof window !== 'undefined' && window.squadMap) || null;
+    if (!map) return false;
+    const ctrl = map.__squadmapsDrawControl || null;
+    const editTb = ctrl && ctrl._toolbars && (ctrl._toolbars.edit || null);
+    // If the edit toolbar has an active mode (edit or remove), treat as mass mode active
+    return !!(editTb && editTb._activeMode);
+  } catch(_) { return false; }
+}
 
 function patchActiveDrawTracking() {
   try {
@@ -102,7 +151,14 @@ function rearmContinuousIfIdle(typeHint) {
 function finishOrCancelActiveDraw(domEvent) {
   try {
     const h = getActiveHandler();
-    if (!h) return false;
+    if (!h) {
+      // If no active draw tool, check for mass edit/delete and try to exit
+      if (isMassEditDeleteActive()) {
+        tryExitMassEditDelete();
+        return true;
+      }
+      return false;
+    }
     const t = String(h.type || '').toLowerCase();
     const isPolyline = /polyline/.test(t);
     const isPolygon = /polygon/.test(t);
@@ -226,10 +282,16 @@ function attachContainerListeners(map) {
     const cont = map && map._container;
     if (!cont || cont.__rcListenersAttached) return;
     cont.__rcListenersAttached = true;
-    const down = (e) => { try { if (e.button===2 && isEventInsideMap(e)) { const acted = finishOrCancelActiveDraw(e); if (acted){ e.preventDefault(); e.stopPropagation(); } } } catch(_){} };
+    const down = (e) => { try {
+      if (e.button===2 && isEventInsideMap(e)) {
+        // First finish/cancel active draw, or exit mass edit/delete
+        const acted = finishOrCancelActiveDraw(e) || (isMassEditDeleteActive() && tryExitMassEditDelete());
+        if (acted){ e.preventDefault(); e.stopPropagation(); }
+      }
+    } catch(_){} };
     const up = (e) => { try { if (!isEventInsideMap(e)) return; if (e.button===2) { e.preventDefault(); e.stopPropagation(); } } catch(_){} };
     // No click suppression after right-click; allow normal clicks to pass through
-    const ctx = (e) => { try { if (isEventInsideMap(e)) { e.preventDefault(); e.stopPropagation(); finishOrCancelActiveDraw(e); } } catch(_){} };
+    const ctx = (e) => { try { if (isEventInsideMap(e)) { e.preventDefault(); e.stopPropagation(); finishOrCancelActiveDraw(e) || (isMassEditDeleteActive() && tryExitMassEditDelete()); } } catch(_){} };
     cont.addEventListener('pointerdown', down, true);
     cont.addEventListener('mousedown', down, true);
     cont.addEventListener('pointerup', up, true);
@@ -262,8 +324,8 @@ export function initRightClick() {
         if (isEventInsideMap(e)) {
           // Always block the native context menu inside the map
           try { e.preventDefault(); e.stopPropagation(); } catch(_) {}
-          // Then try to finish/cancel any active draw tool
-          finishOrCancelActiveDraw(e);
+          // Then try to finish/cancel any active draw tool or exit mass modes
+          finishOrCancelActiveDraw(e) || (isMassEditDeleteActive() && tryExitMassEditDelete());
           return false;
         }
       } catch (_) {}
@@ -276,7 +338,7 @@ export function initRightClick() {
       try {
         if (e.button !== 2) return; // right button only
         if (isEventInsideMap(e)) {
-          const acted = finishOrCancelActiveDraw(e);
+          const acted = finishOrCancelActiveDraw(e) || (isMassEditDeleteActive() && tryExitMassEditDelete());
           if (acted) { e.preventDefault(); e.stopPropagation(); return false; }
         }
       } catch (_) {}

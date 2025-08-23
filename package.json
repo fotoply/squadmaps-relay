@@ -1,6 +1,6 @@
 {
   "name": "squadmaps-relay-server",
-  "version": "2025.2.0",
+  "version": "2025.3.0",
   "private": true,
   "scripts": {
     "start": "node ./bin/www",
