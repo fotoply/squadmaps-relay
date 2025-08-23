@@ -30,6 +30,7 @@ let __lastMouseLatLng = null; // Track last mouse position over the map
 let __mapMouseMoveHandlerAdded = false;
 let __activeEditedLayer = null; // Enforce single active edit layer
 const __editEmitDebounceMs = 150; // debounce edits to avoid flooding
+let __toolbarEditModeActive = false; // Track Leaflet.Draw toolbar edit mode
 
 function __isActiveMapPath() {
     try {
@@ -1481,12 +1482,28 @@ export function initDraw(deps = {}) {
         map.on('draw:editstart', () => {
             try {
                 __activeEditedLayer = null; // reset manual tracking when toolbar edit mode begins
+                __toolbarEditModeActive = true;
+                // Attach live-edit emitters to all layers while toolbar edit is active
+                const grp = map.__squadmapsDrawnItems;
+                grp && grp.eachLayer && grp.eachLayer(l => { try { __attachPerLayerEditEmit(l); } catch (_) {} });
+                // While editing, attach to any new layers added to the group
+                if (grp && !grp.__squadToolbarEditLayerAddBound) {
+                    grp.on && grp.on('layeradd', (ev) => { try { if (__toolbarEditModeActive) __attachPerLayerEditEmit(ev && ev.layer); } catch (_) {} });
+                    grp.__squadToolbarEditLayerAddBound = true;
+                }
                 disablePointerBlockers(map);
             } catch (_) {
             }
         });
         map.on('draw:editstop', () => {
             try {
+                // Flush and detach listeners from all layers
+                const grp = map.__squadmapsDrawnItems;
+                grp && grp.eachLayer && grp.eachLayer(l => {
+                    try { __flushLayerEditEmit(l); } catch (_) {}
+                    try { __detachPerLayerEditEmit(l); } catch (_) {}
+                });
+                __toolbarEditModeActive = false;
                 __stopEditingActiveLayer();
             } catch (_) {
             }
@@ -1548,13 +1565,10 @@ export function initDraw(deps = {}) {
         map.on('draw:edited', (e) => {
             try {
                 const layers = e.layers;
-                const changes = [];
                 layers && layers.eachLayer && layers.eachLayer((layer) => {
-                    const id = layer._drawSyncId || null;
-                    const feature = layerToSerializable(layer);
-                    changes.push({id, geojson: feature});
+                    // Use deduped single-layer emit to avoid duplicate final updates
+                    __dedupAndEmitLayerEdit(layer);
                 });
-                if (changes.length) emit.drawEdit && emit.drawEdit(changes);
             } catch (err) {
                 console.warn('[draw] draw:edited handler failed', err);
             }
