@@ -60,13 +60,11 @@ function closeRadial() {
   try { if (__radialEl && __radialEl.parentElement) __radialEl.parentElement.removeChild(__radialEl); } catch (_) {}
   __radialEl = null;
   try { window.__squadMarkerRadialOpen = false; } catch (_) {}
-  try { window.removeEventListener('keydown', onRadialKey); } catch (_) {}
   try { document.removeEventListener('click', onDocClick, true); } catch (_) {}
   try { const map = window.squadMap; map && map.off && map.off('movestart', closeRadial); map && map.off && map.off('zoomstart', closeRadial); } catch (_) {}
   try { const cbs = __radialClosedCbs.slice(); __radialClosedCbs.length = 0; cbs.forEach(fn => { try { fn(); } catch (_) {} }); } catch (_) {}
 }
 
-function onRadialKey(e) { if (e.key === 'Escape') closeRadial(); }
 function onDocClick(e) { if (!__radialEl) return; if (__radialEl.contains(e.target)) return; closeRadial(); }
 
 function openRadialForMarker(marker) {
@@ -106,7 +104,6 @@ function openRadialForMarker(marker) {
   try { map._container.style.position = map._container.style.position || 'relative'; } catch (_) {}
   (map._container || document.body).appendChild(wrap);
   __radialEl = wrap;
-  window.addEventListener('keydown', onRadialKey);
   document.addEventListener('click', onDocClick, true);
   try { map.on && map.on('movestart', closeRadial); map.on && map.on('zoomstart', closeRadial); } catch (_) {}
 }
@@ -115,6 +112,8 @@ function openRadialForMarker(marker) {
 try {
   window.__squadOpenMarkerRadial = openRadialForMarker;
   window.__squadOnMarkerRadialClosedOnce = (cb) => { if (!cb) return; if (!window.__squadMarkerRadialOpen) { try { cb(); } catch(_) {} return; } __radialClosedCbs.push(cb); };
+  // Also expose a closer so the keyboard module can close on Escape
+  window.__squadCloseMarkerRadial = closeRadial;
 } catch (_) {}
 
 export function initMarkers() {

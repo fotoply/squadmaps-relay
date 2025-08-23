@@ -50,6 +50,9 @@ that syncs map navigation, drawings, pointer pings, and presence across browsers
 - `modules/markers.js`: Font Awesome marker icon choice (radial picker after placing a marker) and patches the Marker
   draw tool icon.
 - `modules/toolbar-extras.js`: color picker (with recent colors) and continuous drawing toggle.
+- `modules/keyboard.js`: centralized keyboard shortcuts — Ctrl+Z/Ctrl+Y (undo/redo), E or Enter to start/stop edit or
+  save in toolbar edit mode, D/Delete/Backspace to delete the layer under the cursor, and Escape to close the marker
+  radial.
 - `rightclick.js`: suppresses context menu in the map and finishes/cancels active draws safely.
 
 Notes
@@ -129,6 +132,7 @@ npm run build:userscript:emit
 - Late joiners receive `state init` with drawings, last pings, current view, and presence snapshot.
 - URL loop prevention: a short suppression window avoids echoing map changes after programmatic navigation.
 - The draw toolbar is re‑ensured after SPA map swaps and DOM mutations.
+- Keyboard handling is centralized in `modules/keyboard.js` to avoid duplicate listeners across modules.
 
 ## TODO / ideas
 

@@ -9,6 +9,7 @@ import { initViewSync } from './modules/view-sync.js';
 import { initSocket } from './modules/sockets.js';
 import { initToolbarExtras } from './modules/toolbar-extras.js';
 import { initPoints } from './modules/points.js';
+import { initKeyboard } from './modules/keyboard.js';
 
 function __isActiveMapPath() { try { const p = (window.location && (window.location.pathname||'')) || ''; return p.startsWith('/map'); } catch(_) { return false; } }
 
@@ -71,6 +72,7 @@ export function bootstrap() {
   // Modular bootstrap: call initUnits immediately; defer others until Leaflet is present
   try { initUnits(); } catch (_) {}
   try { initRightClick(); } catch (_) {}
+  try { initKeyboard(); } catch (_) {}
 
   function start() {
     // Ensure we capture the map instance when created
@@ -385,6 +387,7 @@ export function bootstrap() {
       initDraw({ emit: { drawCreate: emit.drawCreate, drawEdit: emit.drawEdit, drawDelete: emit.drawDelete, drawProgress: emit.drawProgress } });
       initToolbarExtras();
       initMarkers();
+      // Keyboard already initialized globally; no per-map action needed
       dlog('UI modules initialized');
 
       // Init points sync (legacy-compatible)

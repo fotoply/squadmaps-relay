@@ -274,46 +274,6 @@ function __deleteLayerAtEvent(e) {
     }
 }
 
-function __handleKeydown(e) {
-    // Undo/redo
-    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
-        e.preventDefault();
-        __undo();
-    } else if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) {
-        e.preventDefault();
-        __redo();
-    }
-    // While toolbar edit mode is active, treat E/Enter as Save
-    else if (__toolbarEditModeActive && (e.key === 'e' || e.key === 'E' || e.key === 'Enter')) {
-        e.preventDefault();
-        const ok = __clickToolbarSave();
-        if (ok) {
-            try { __toolbarEditModeActive = false; } catch (_) {}
-            return;
-        }
-        // Fallback: flush and stop any active manual edit and restore pointers
-        __stopEditingActiveLayer();
-        try { __toolbarEditModeActive = false; } catch (_) {}
-    }
-    // Delete layer at mouse event
-    else if ((e.key === 'Delete' || e.key === 'Backspace' || e.key === "d" || e.key === "D")) {
-        e.preventDefault();
-        console.log('[draw] __handleKeydown: delete key pressed', e.key);
-        __deleteLayerAtEvent(e);
-    }
-    // Edit layer at mouse event
-    else if ((e.key === 'e' || e.key === 'E' || e.key === 'Enter')) {
-        e.preventDefault();
-        // If no hovered layer but a layer is currently being edited, treat as save/stop
-        if (!__toolbarEditModeActive && !__hoveredLayer && __activeEditedLayer) {
-            __stopEditingActiveLayer();
-            return;
-        }
-        console.log('[draw] __handleKeydown: edit key pressed', e.key);
-        __editLayerAtEvent(e);
-    }
-}
-
 function __clickToolbarSave() {
     try {
         const map = (typeof window !== 'undefined' && window.squadMap) || null;
@@ -359,13 +319,6 @@ function __clickToolbarSave() {
         } catch (_) {}
     } catch (_) {}
     return false;
-}
-
-function __addUndoListener() {
-    if (!__undoListenerAdded && typeof window !== 'undefined') {
-        window.addEventListener('keydown', __handleKeydown);
-        __undoListenerAdded = true;
-    }
 }
 
 function __undo() {
@@ -1776,9 +1729,6 @@ export function initDraw(deps = {}) {
         } catch (_) {
         }
 
-        // Initialize undo/redo listener
-        __addUndoListener();
-
         // Track mouse position over the map for keyboard-based edit/delete
         try {
             if (!__mapMouseMoveHandlerAdded) {
@@ -2099,3 +2049,14 @@ export function recheckDrawToolbar() {
     } catch (_) {
     }
 }
+
+// Public wrappers for keyboard module
+export function undo() { try { __undo(); } catch (_) {} }
+export function redo() { try { __redo(); } catch (_) {} }
+export function deleteAtCursor(e) { try { __deleteLayerAtEvent(e); } catch (_) {} }
+export function triggerEditAtCursor(e) { try { __editLayerAtEvent(e); } catch (_) {} }
+export function stopManualEditing() { try { __stopEditingActiveLayer(); } catch (_) {} }
+export function clickToolbarSave() { try { return __clickToolbarSave(); } catch (_) { return false; } }
+export function isToolbarEditModeActive() { try { return !!__toolbarEditModeActive; } catch (_) { return false; } }
+export function hasActiveEditedLayer() { try { return !!__activeEditedLayer; } catch (_) { return false; } }
+export function hasHoveredLayer() { try { return !!__hoveredLayer; } catch (_) { return false; } }
