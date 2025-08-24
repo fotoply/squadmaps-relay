@@ -54,11 +54,47 @@ that syncs map navigation, drawings, pointer pings, and presence across browsers
   save in toolbar edit mode, D/Delete/Backspace to delete the layer under the cursor, and Escape to close the marker
   radial.
 - `rightclick.js`: suppresses context menu in the map and finishes/cancels active draws safely.
+- `modules/leaflet-events-shim.js`: patches Leaflet’s event APIs to expose a debug registry of event handlers.
 
 Notes
 
 - The first Leaflet map instance is captured to `window.squadMap` for downstream modules.
 - Incoming drawings from `state init` are buffered until the map is ready, then applied.
+
+## Leaflet events shim (debugging)
+
+To help inspect what handlers are hooked to Leaflet events, the userscript installs a lightweight shim that records
+handlers registered through `L.Evented.on/off/once` as well as `L.DomEvent.on/off` (for DOM listeners Leaflet attaches
+on the container/document).
+
+Globals exposed in the page:
+
+- `window.__leafletEventRegistry`
+  - `of(target, types?)` → [{ target, type, fn, ctx, once?, ts? }, …]
+  - `ofDeep(map, types?)` → same as `of` but includes all layers of the map
+  - `dump(target, types?)` / `dumpDeep(map, types?)` → logs to console
+- `window.__leafletDomEventRegistry`
+  - `get(element, type?)` → [{ type, fn, ctx, ts, capture? }, …]
+- Convenience:
+  - `window.__leafletListHandlers(target, types?)`
+  - `window.__leafletListHandlersDeep(map, types?)`
+
+Examples (run in DevTools console):
+
+- All click/dblclick handlers on the map and its layers:
+  - `__leafletListHandlersDeep(window.squadMap, ['click','dblclick'])`
+  - or `__leafletEventRegistry.dumpDeep(window.squadMap, ['click','dblclick'])`
+- Handlers on a specific layer:
+  - `const layer = Object.values(window.squadMap._layers)[0]; __leafletListHandlers(layer, 'click')`
+- DOM listeners on the Leaflet container:
+  - `const el = window.squadMap && window.squadMap.getContainer(); __leafletDomEventRegistry.get(el, 'click')`
+
+Notes and caveats
+
+- This is for debugging. It relies on Leaflet internals (`_events`) to also surface pre‑shim handlers and may break with
+  a future Leaflet version.
+- It only tracks listeners that go through Leaflet’s APIs. Raw `addEventListener` on DOM nodes isn’t included.
+- Returned `fn` values are the actual callable function objects, though Leaflet may wrap the original.
 
 ## Socket.IO events
 

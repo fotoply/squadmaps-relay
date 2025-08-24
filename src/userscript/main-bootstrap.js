@@ -10,6 +10,7 @@ import { initSocket } from './modules/sockets.js';
 import { initToolbarExtras } from './modules/toolbar-extras.js';
 import { initPoints } from './modules/points.js';
 import { initKeyboard } from './modules/keyboard.js';
+import { initLeafletEventsShim } from './modules/leaflet-events-shim.js';
 
 function __isActiveMapPath() { try { const p = (window.location && (window.location.pathname||'')) || ''; return p.startsWith('/map'); } catch(_) { return false; } }
 
@@ -69,6 +70,9 @@ function installMapCapture() {
 }
 
 export function bootstrap() {
+  // Install Leaflet event shim ASAP (it will self-install when Leaflet is present)
+  try { initLeafletEventsShim(); } catch (_) {}
+
   // Modular bootstrap: call initUnits immediately; defer others until Leaflet is present
   try { initUnits(); } catch (_) {}
   try { initRightClick(); } catch (_) {}
