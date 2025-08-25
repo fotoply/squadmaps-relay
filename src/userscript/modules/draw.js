@@ -44,21 +44,25 @@ function __isActiveMapPath() {
     }
 }
 
-function __findLayerAtLatLng(latlng) {
+function __findLayerAtLatLng(latlng, opts) {
     if (!window.squadMap || !window.squadMap.__squadmapsDrawnItems) return null;
     const map = window.squadMap;
+    const ignoreMarkers = !!(opts && opts.ignoreMarkers);
     let found = null;
     let bestPixDist = Infinity;
     window.squadMap.__squadmapsDrawnItems.eachLayer(function(layer) {
         try {
-            // Prefer precise pixel-distance check for markers
-            if (layer.getLatLng && typeof layer.getLatLng === 'function' && layer instanceof L.Marker) {
+            // Skip marker layers entirely when requested
+            if (ignoreMarkers && (layer instanceof L.Marker)) {
+                return;
+            }
+            // Precise pixel-distance check for markers when not ignored
+            if (!ignoreMarkers && layer.getLatLng && typeof layer.getLatLng === 'function' && layer instanceof L.Marker) {
                 const mll = layer.getLatLng();
                 const p1 = map.latLngToContainerPoint(latlng);
                 const p2 = map.latLngToContainerPoint(mll);
                 const dx = p1.x - p2.x, dy = p1.y - p2.y;
                 const dist = Math.sqrt(dx*dx + dy*dy);
-                // Consider within ~24px a hit (roughly the inner icon size)
                 if (dist <= 24 && dist < bestPixDist) { found = layer; bestPixDist = dist; }
                 return;
             }
@@ -69,7 +73,7 @@ function __findLayerAtLatLng(latlng) {
                 return;
             }
             // Fallback distance check for anything exposing a LatLng
-            if (layer.getLatLng && layer.getLatLng().distanceTo && latlng.distanceTo(layer.getLatLng()) < 15) {
+            if (!ignoreMarkers && layer.getLatLng && layer.getLatLng().distanceTo && latlng.distanceTo(layer.getLatLng()) < 15) {
                 found = layer; bestPixDist = 0;
             }
         } catch (_) {}
@@ -77,22 +81,27 @@ function __findLayerAtLatLng(latlng) {
     return found;
 }
 
-function __layerFromEventOrCursor(e) {
+function __layerFromEventOrCursor(e, opts) {
     try {
         const map = (typeof window !== 'undefined' && window.squadMap) || null;
         if (!map) return null;
+        const ignoreMarkers = !!(opts && opts.ignoreMarkers);
         // Prefer currently hovered layer when available
-        if (__hoveredLayer) return __hoveredLayer;
+        if (__hoveredLayer) {
+            try {
+                if (!(ignoreMarkers && (__hoveredLayer instanceof L.Marker))) return __hoveredLayer;
+            } catch (_) { return __hoveredLayer; }
+        }
         // If this is a mouse event with coordinates, use that
         if (e && typeof e.clientX === 'number' && typeof e.clientY === 'number') {
             try {
                 const point = map.mouseEventToContainerPoint(e);
                 const latlng = map.containerPointToLatLng(point);
-                return __findLayerAtLatLng(latlng);
+                return __findLayerAtLatLng(latlng, opts);
             } catch (_) {}
         }
         // Fallback to last recorded mouse position over the map
-        if (__lastMouseLatLng) return __findLayerAtLatLng(__lastMouseLatLng);
+        if (__lastMouseLatLng) return __findLayerAtLatLng(__lastMouseLatLng, opts);
     } catch (_) {}
     return null;
 }
@@ -280,7 +289,7 @@ function __startEditingLayer(layer) {
 
 function __editLayerAtEvent(e) {
     const map = (typeof window !== 'undefined' && window.squadMap) || null;
-    const layer = __layerFromEventOrCursor(e);
+    const layer = __layerFromEventOrCursor(e, { ignoreMarkers: true });
     if (map && layer) {
         console.log('[draw] __editLayerAtEvent: found layer', layer);
         // Toggle if the same layer is already active
@@ -305,7 +314,7 @@ function __editLayerAtEvent(e) {
 function __deleteLayerAtEvent(e) {
     const map = (typeof window !== 'undefined' && window.squadMap) || null;
     const group = map && map.__squadmapsDrawnItems;
-    const layer = __layerFromEventOrCursor(e);
+    const layer = __layerFromEventOrCursor(e); // keep default behavior for delete
     if (map && group && layer) {
         console.log('[draw] __deleteLayerAtEvent: found layer', layer);
         // If deleting the active edited layer, stop editing first (without emitting)
