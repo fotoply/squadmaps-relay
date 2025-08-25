@@ -179,7 +179,7 @@ npm run build:userscript:emit
 - [x] Undo/redo (Ctrl+Z / Ctrl+Y).
 - [x] Add quick delete/edit for shapes
 - [x] Edit sync in progress (move vertices, move entire shape), not just on edit end.
-- [ ] Fix Point markers being considered when editing, they make it hard to move stuff around, they should not be clickable while local edit or mass edit is active.
+- [x] Fix Point markers being considered when editing, they make it hard to move stuff around, they should not be clickable while local edit or mass edit is active.
 - [ ] Mortar workflow: shared targets with per‑client movable local marker.
 - [ ] Squad specific features: spawn points, rally points, FOBs, etc. with a corresponding radius that is pre-scaled.
   Should be one-element, so if you move or delete the flag the radius goes with it. They should also have a fixed color
