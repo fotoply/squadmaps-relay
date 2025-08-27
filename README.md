@@ -3,6 +3,8 @@
 Real‑time collaboration for https://squadmaps.com: a small Socket.IO relay server plus a modular Tampermonkey userscript
 that syncs map navigation, drawings, pointer pings, and presence across browsers.
 
+**NOTE:** This repository is partly created as an exploration in using AI assistance tools for programming, expect the code to be of a lower quality.
+
 ## What’s included
 
 - Relay server (Express + Socket.IO) with in‑memory state
