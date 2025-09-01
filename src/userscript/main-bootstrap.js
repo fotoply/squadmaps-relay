@@ -11,6 +11,7 @@ import { initToolbarExtras } from './modules/toolbar-extras.js';
 import { initPoints } from './modules/points.js';
 import { initKeyboard } from './modules/keyboard.js';
 import { initLeafletEventsShim } from './modules/leaflet-events-shim.js';
+import { initSquadMarkers } from './modules/squad-markers.js';
 
 function __isActiveMapPath() { try { const p = (window.location && (window.location.pathname||'')) || ''; return p.startsWith('/map'); } catch(_) { return false; } }
 
@@ -289,6 +290,7 @@ export function bootstrap() {
                   initToolbarExtras();
                   initMarkers();
                   initDraw({ emit: { drawCreate: emit.drawCreate, drawEdit: emit.drawEdit, drawDelete: emit.drawDelete, drawProgress: emit.drawProgress } });
+                  initSquadMarkers();
 
                   // Re-evaluate success after actions
                   let okToolbar = false, okCtrl = false;
@@ -322,12 +324,13 @@ export function bootstrap() {
                   if (!hasMap) {
                     try { const cont = document.querySelector && document.querySelector('.leaflet-container'); if (cont) { try { window.dispatchEvent(new Event('resize')); } catch (_) {} try { cont.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 6, clientY: 6 })); } catch (_) {} } } catch (_) {}
                   }
-                  if (hasMap) {
+                  if (hasMap && !done) {
                     dlog('late map detected; running ensure sequence');
                     recheckDrawToolbar();
                     initToolbarExtras();
                     initMarkers();
                     initDraw({ emit: { drawCreate: emit.drawCreate, drawEdit: emit.drawEdit, drawDelete: emit.drawDelete, drawProgress: emit.drawProgress } });
+                    initSquadMarkers();
                     // confirm
                     const m = W && W.squadMap; const el = m && m._container;
                     const okToolbar = !!(el && el.querySelector && el.querySelector('.leaflet-draw-toolbar.leaflet-bar'));
@@ -391,6 +394,7 @@ export function bootstrap() {
       initDraw({ emit: { drawCreate: emit.drawCreate, drawEdit: emit.drawEdit, drawDelete: emit.drawDelete, drawProgress: emit.drawProgress } });
       initToolbarExtras();
       initMarkers();
+      initSquadMarkers();
       // Keyboard already initialized globally; no per-map action needed
       dlog('UI modules initialized');
 

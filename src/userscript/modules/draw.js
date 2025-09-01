@@ -52,12 +52,12 @@ function __findLayerAtLatLng(latlng, opts) {
     let bestPixDist = Infinity;
     window.squadMap.__squadmapsDrawnItems.eachLayer(function(layer) {
         try {
-            // Skip marker layers entirely when requested
-            if (ignoreMarkers && (layer instanceof L.Marker)) {
+            // Skip marker layers entirely when requested, except composite squad markers
+            if (ignoreMarkers && (layer instanceof L.Marker) && !layer.__squadComposite) {
                 return;
             }
-            // Precise pixel-distance check for markers when not ignored
-            if (!ignoreMarkers && layer.getLatLng && typeof layer.getLatLng === 'function' && layer instanceof L.Marker) {
+            // Precise pixel-distance check for markers when not ignored (or when composite)
+            if ((!ignoreMarkers || (layer instanceof L.Marker)) && layer.getLatLng && typeof layer.getLatLng === 'function' && layer instanceof L.Marker) {
                 const mll = layer.getLatLng();
                 const p1 = map.latLngToContainerPoint(latlng);
                 const p2 = map.latLngToContainerPoint(mll);
@@ -72,7 +72,7 @@ function __findLayerAtLatLng(latlng, opts) {
                 if (b && b.contains && b.contains(latlng)) { found = layer; bestPixDist = 0; }
                 return;
             }
-            // Fallback distance check for anything exposing a LatLng
+            // Fallback distance check
             if (!ignoreMarkers && layer.getLatLng && layer.getLatLng().distanceTo && latlng.distanceTo(layer.getLatLng()) < 15) {
                 found = layer; bestPixDist = 0;
             }
@@ -86,10 +86,10 @@ function __layerFromEventOrCursor(e, opts) {
         const map = (typeof window !== 'undefined' && window.squadMap) || null;
         if (!map) return null;
         const ignoreMarkers = !!(opts && opts.ignoreMarkers);
-        // Prefer currently hovered layer when available
+        // Prefer currently hovered layer when available; still allow composite markers
         if (__hoveredLayer) {
             try {
-                if (!(ignoreMarkers && (__hoveredLayer instanceof L.Marker))) return __hoveredLayer;
+                if (!(ignoreMarkers && (__hoveredLayer instanceof L.Marker) && !__hoveredLayer.__squadComposite)) return __hoveredLayer;
             } catch (_) { return __hoveredLayer; }
         }
         // If this is a mouse event with coordinates, use that
@@ -1200,6 +1200,7 @@ export function layerToSerializable(layer) {
             // optional extra metadata for custom icons
             if (layer.__faIconName) props.icon = layer.__faIconName;
             if (layer.__faColor) props.iconColor = layer.__faColor;
+            if (layer.__squadComposite) props.squadComposite = layer.__squadComposite;
         }
 
         return {type: 'Feature', geometry, properties: props};
@@ -1250,6 +1251,12 @@ export function geojsonToLayer(feature) {
         }
         if (t === 'marker' && geometry.type === 'Point') {
             const [lng, lat] = geometry.coordinates || [0, 0];
+            // If this is a squad composite marker, use the factory
+            if (properties && properties.squadComposite && typeof window !== 'undefined' && typeof window.__squadCreateCompositeMarker === 'function') {
+                const typeKey = properties.squadComposite.type;
+                const m = window.__squadCreateCompositeMarker(typeKey, L.latLng(lat, lng));
+                return m;
+            }
             const m = L.marker(L.latLng(lat, lng));
             // Apply FA icon immediately for remote markers
             const iconName = properties.icon || m.__faIconName || 'location-dot';
@@ -1608,12 +1615,14 @@ export function initDraw(deps = {}) {
                 ensureLayerEditable(layer, false);
                 // If a marker was placed, open the radial icon selector
                 try {
-                    if (layer instanceof L.Marker && typeof window.__squadOpenMarkerRadial === 'function') window.__squadOpenMarkerRadial(layer);
+                    // Respect per-marker suppression and a one-time global suppression flag
+                    const skipRadial = (layer && layer.__squadNoRadial) || (window && window.__squadSuppressNextRadial && (delete window.__squadSuppressNextRadial, true));
+                    if (layer instanceof L.Marker && !skipRadial && typeof window.__squadOpenMarkerRadial === 'function') window.__squadOpenMarkerRadial(layer);
                 } catch (_) {
                 }
                 // Ensure newly created markers carry icon metadata and user color so remotes render correctly
                 try {
-                    if (layer instanceof L.Marker) {
+                    if (layer instanceof L.Marker && !layer.__squadFixedIcon) {
                         const ctrl = map && map.__squadmapsDrawControl;
                         const iconName = (ctrl && ctrl.options && ctrl.options.draw && ctrl.options.draw.marker && ctrl.options.draw.marker.iconName)
                             || (window && window.__squadMarkerIconName)
